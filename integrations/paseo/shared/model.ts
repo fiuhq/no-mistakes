@@ -129,6 +129,8 @@ export interface Seen {
   status: string;
   steps: Record<string, string>;
   prUrl: string | null;
+  /** How many rows the run has earned so far; absent in a seen.json written before rows were counted. */
+  rows?: number;
 }
 
 export function seenOf(run: RunView): Seen {
@@ -156,9 +158,15 @@ export function rowsFor(prev: Seen | undefined, run: RunView): Row[] {
   return rows;
 }
 
-/** Stable per event, so a row is never appended twice for the same change. */
-export function rowId(row: Row): string {
-  return ["nm", row.runId, row.event, row.step ?? "", row.status].join("-");
+/**
+ * The rows a run earned since `prev`, each with its id, and what to remember next. A row's id is its sequence
+ * number within the run, so a step that parks again gets a new row while re-announcing the same change (seen
+ * not yet recorded) reuses the same ids.
+ */
+export function announce(prev: Seen | undefined, run: RunView): { rows: { id: string; row: Row }[]; seen: Seen } {
+  const before = prev?.rows ?? 0;
+  const rows = rowsFor(prev, run).map((row, i) => ({ id: `nm-${run.id}-${before + i}`, row }));
+  return { rows, seen: { ...seenOf(run), rows: before + rows.length } };
 }
 
 export function describeRow(row: Row): string {

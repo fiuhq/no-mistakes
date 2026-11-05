@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test";
-import { describeRow, pillLabel, rowId, rowsFor, runForWorkspace, seenOf, verdict, type RunView, type StepView } from "./model";
+import { announce, describeRow, pillLabel, rowsFor, runForWorkspace, seenOf, verdict, type RunView, type StepView } from "./model";
 
 const NAMES = ["intent", "rebase", "review", "test", "document", "lint", "push", "pr", "ci"];
 
@@ -79,10 +79,36 @@ describe("rowsFor", () => {
     expect(rowsFor(seenOf(fixed), failed).map(describeRow)).toEqual(["no-mistakes test failed: 3 tests failed", "no-mistakes failed: tests failed"]);
   });
 
-  test("the same change never earns a second row, and its id is stable", () => {
+  test("the same change never earns a second row", () => {
     const parked = run(["completed", "completed", "awaiting_approval"]);
     expect(rowsFor(seenOf(parked), parked)).toEqual([]);
-    const [row] = rowsFor(seenOf(run(["completed", "completed", "running"])), parked);
-    expect(rowId(row!)).toBe("nm-r1-parked-review-awaiting_approval");
+  });
+});
+
+describe("announce", () => {
+  test("a step that parks again after a fix round earns a second row with its own id", () => {
+    const started = announce(undefined, run(["completed", "completed", "running"]));
+    const parked = announce(started.seen, run(["completed", "completed", "awaiting_approval"]));
+    const fixing = announce(parked.seen, run(["completed", "completed", "fixing"]));
+    const reparked = announce(fixing.seen, run(["completed", "completed", "awaiting_approval"]));
+
+    expect(fixing.rows).toEqual([]);
+    expect([...parked.rows, ...reparked.rows].map(({ id, row }) => [id, row.event, row.step])).toEqual([
+      ["nm-r1-1", "parked", "review"],
+      ["nm-r1-2", "parked", "review"],
+    ]);
+  });
+
+  test("an unchanged run earns no rows and keeps its count", () => {
+    const parked = announce(undefined, run(["completed", "completed", "awaiting_approval"]));
+    const again = announce(parked.seen, run(["completed", "completed", "awaiting_approval"]));
+    expect(again.rows).toEqual([]);
+    expect(again.seen).toEqual(parked.seen);
+  });
+
+  test("a seen entry written before rows were counted starts the count at zero", () => {
+    const { rows, seen } = announce(seenOf(run(["running"])), run(["completed", "completed", "awaiting_approval"]));
+    expect(rows.map((r) => r.id)).toEqual(["nm-r1-0"]);
+    expect(seen.rows).toBe(1);
   });
 });

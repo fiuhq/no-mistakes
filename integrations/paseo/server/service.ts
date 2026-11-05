@@ -7,13 +7,16 @@ import type { PaseoApi } from "@getpaseo/client";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { ROW_KIND, ROW_VERSION, rowId, rowsFor, seenOf, type RunView, type Seen, type StateView } from "../shared/model";
+import { announce, ROW_KIND, ROW_VERSION, type RunView, type Seen, type StateView } from "../shared/model";
 import { nmHome, readRuns, statePath, withState } from "./db";
+import { canonical, workspacesFor, worktreesOf } from "./worktrees";
 
 /** Finished runs older than this drop out of the views. */
 const WINDOW_SECONDS = 7 * 24 * 60 * 60;
 /** The daemon writes the database several times per step; one read per burst is enough. */
-const SETTLE_MS = 750;
+const SETTLE_MS = 1500;
+/** How long one checkout's worktree list is reused. */
+const WORKTREES_TTL_MS = 5000;
 
 function log(message: string, error?: unknown): void {
   console.error(`[no-mistakes] ${message}${error === undefined ? "" : `: ${error instanceof Error ? error.message : String(error)}`}`);
@@ -40,7 +43,7 @@ function writeSeen(seen: Record<string, Seen>): void {
   fs.renameSync(`${file}.tmp`, file);
 }
 
-/** Paseo workspaces by the checkout they run in. A worktree workspace has its own directory; a local one is its project root. */
+/** Paseo workspaces by the canonical checkout they run in. A worktree workspace has its own directory; a local one is its project root. */
 async function workspacesByDir(paseo: PaseoApi): Promise<Map<string, string[]>> {
   const byDir = new Map<string, string[]>();
   let cursor: string | undefined;
@@ -48,7 +51,7 @@ async function workspacesByDir(paseo: PaseoApi): Promise<Map<string, string[]>> 
     // Paseo pages at most 200 workspaces at a time.
     const { entries, pageInfo } = await paseo.workspaces.list({ page: { limit: 200, ...(cursor ? { cursor } : {}) } });
     for (const workspace of entries) {
-      const dir = workspace.workspaceDirectory ?? workspace.projectRootPath;
+      const dir = canonical(workspace.workspaceDirectory ?? workspace.projectRootPath);
       byDir.set(dir, [...(byDir.get(dir) ?? []), workspace.id]);
     }
     cursor = pageInfo.hasMore ? (pageInfo.nextCursor ?? undefined) : undefined;
@@ -56,12 +59,26 @@ async function workspacesByDir(paseo: PaseoApi): Promise<Map<string, string[]>> 
   return byDir;
 }
 
+// ponytail: each checkout's worktrees are up to 5s stale so the 3s client poll does not run git per read; a new worktree's run shows on its workspace after that.
+const worktreeCache = new Map<string, { at: number; worktrees: Promise<Map<string, string>> }>();
+
+function cachedWorktrees(repoPath: string, now: number): Promise<Map<string, string>> {
+  const hit = worktreeCache.get(repoPath);
+  if (hit && now - hit.at < WORKTREES_TTL_MS) return hit.worktrees;
+  const worktrees = worktreesOf(repoPath);
+  worktreeCache.set(repoPath, { at: now, worktrees });
+  return worktrees;
+}
+
 async function readState(paseo: PaseoApi | null): Promise<StateView> {
   const readAt = Date.now();
   try {
     const runs = withState(statePath(), (db) => readRuns(db, Math.floor(readAt / 1000) - WINDOW_SECONDS));
-    const byDir = paseo ? await workspacesByDir(paseo) : new Map<string, string[]>();
-    return { runs: runs.map((run) => ({ ...run, workspaceIds: byDir.get(run.repoPath) ?? [] })), readAt, problem: null };
+    if (!paseo) return { runs: runs.map((run) => ({ ...run, workspaceIds: [] })), readAt, problem: null };
+    const byDir = await workspacesByDir(paseo);
+    const repoPaths = [...new Set(runs.map((run) => run.repoPath))];
+    const worktrees = new Map(await Promise.all(repoPaths.map(async (repoPath) => [repoPath, await cachedWorktrees(repoPath, readAt)] as const)));
+    return { runs: runs.map((run) => ({ ...run, workspaceIds: workspacesFor(run, worktrees.get(run.repoPath)!, byDir) })), readAt, problem: null };
   } catch (error) {
     return { runs: [], readAt, problem: `could not read ${statePath()}: ${error instanceof Error ? error.message : String(error)}` };
   }
@@ -108,16 +125,18 @@ class Service {
     return readState(paseo);
   }
 
+  /** At most one read per SETTLE_MS however long the daemon keeps writing; a later write rides the pending read. */
   private schedule(): void {
-    if (this.timer) clearTimeout(this.timer);
+    if (this.timer) return;
     this.timer = setTimeout(() => {
-      this.running = this.running.then(() => this.announce()).catch((error: unknown) => log("could not write run rows", error));
+      this.timer = null;
+      this.running = this.running.then(() => this.publish()).catch((error: unknown) => log("could not write run rows", error));
     }, SETTLE_MS);
     this.timer.unref();
   }
 
   /** Appends each changed run's rows to its agent's chat, then records what was seen. */
-  private async announce(): Promise<void> {
+  private async publish(): Promise<void> {
     const paseo = this.paseo;
     if (!paseo) return; // nothing is recorded, so the change is announced once an API arrives
     const state = await readState(paseo);
@@ -125,16 +144,15 @@ class Service {
     const seen = readSeen();
     const next: Record<string, Seen> = {};
     for (const run of state.runs) {
-      next[run.id] = seenOf(run);
+      const { rows, seen: runSeen } = announce(seen?.[run.id], run);
+      next[run.id] = runSeen;
       // First start on this host: everything already there is the baseline, not news.
-      if (!seen) continue;
-      const rows = rowsFor(seen[run.id], run);
-      if (rows.length === 0) continue;
+      if (!seen || rows.length === 0) continue;
       const agentId = await agentFor(paseo, run);
       if (!agentId) continue;
-      for (const row of rows) {
+      for (const { id, row } of rows) {
         try {
-          await paseo.agents.ref(agentId).timeline.append({ type: "plugin", id: rowId(row), kind: ROW_KIND, version: ROW_VERSION, data: row });
+          await paseo.agents.ref(agentId).timeline.append({ type: "plugin", id, kind: ROW_KIND, version: ROW_VERSION, data: row });
         } catch (error) {
           log(`could not add a row to ${agentId}`, error);
         }
@@ -146,6 +164,9 @@ class Service {
   dispose(): void {
     this.watcher?.close();
     if (this.timer) clearTimeout(this.timer);
+    this.timer = null;
+    this.paseo = null;
+    if (instance === this) instance = null;
   }
 }
 
@@ -155,7 +176,8 @@ export function service(): Service {
   if (!instance) {
     instance = new Service();
     instance.start();
-    for (const signal of ["disconnect", "SIGTERM", "SIGINT"] as const) process.once(signal, () => instance?.dispose());
   }
   return instance;
 }
+
+for (const signal of ["disconnect", "SIGTERM", "SIGINT"] as const) process.once(signal, () => instance?.dispose());

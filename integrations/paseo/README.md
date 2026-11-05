@@ -16,7 +16,8 @@ It is read-only: it never answers, aborts or reruns a run. Those stay with whoev
 - The daemon half reads `$NM_HOME/state.sqlite` (default `~/.no-mistakes`) read-only. `server/db.test.ts`
   builds a database from `internal/db/schema.go` and runs the same queries, so a schema change that breaks
   them fails that test.
-- A run belongs to the Paseo workspaces whose directory is the checkout no-mistakes recorded for its gate.
+- A run belongs to the Paseo workspaces whose directory is a worktree of the checkout no-mistakes recorded for
+  its gate (`git worktree list`) with the run's branch checked out.
 - Chat rows are driven by the daemon writing its database (an fs watch on `$NM_HOME`), not by a timer.
   What was already announced is kept in `$PASEO_HOME/no-mistakes/seen.json`; on its first start on a host
   the plugin records the existing runs without announcing them.
