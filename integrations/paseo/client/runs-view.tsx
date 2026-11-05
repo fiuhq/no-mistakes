@@ -66,7 +66,8 @@ function RunCard({ run, theme, now, navigation, showRepo }: { run: RunView; them
       {run.error ? <Text style={[styles.detail, { color: theme.colors.statusDanger }]} selectable>{run.error}</Text> : null}
       <View style={styles.row}>
         {run.prUrl ? <ExternalLink href={run.prUrl} testID={`no-mistakes-pr-${run.id}`}>{`Pull request ${prNumber(run.prUrl) ?? ""}`.trim()}</ExternalLink> : null}
-        {navigation && workspaceId ? (
+        {/* The sidebar page lists every checkout; the panel is already inside its workspace. */}
+        {showRepo && navigation && workspaceId ? (
           <Pressable accessibilityRole="button" testID={`no-mistakes-open-${run.id}`} onPress={() => navigation.openWorkspace({ workspaceId })}>
             <Text style={styles.link}>Open workspace</Text>
           </Pressable>

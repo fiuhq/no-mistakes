@@ -43,11 +43,16 @@ function writeSeen(seen: Record<string, Seen>): void {
 /** Paseo workspaces by the checkout they run in. A worktree workspace has its own directory; a local one is its project root. */
 async function workspacesByDir(paseo: PaseoApi): Promise<Map<string, string[]>> {
   const byDir = new Map<string, string[]>();
-  const { entries } = await paseo.workspaces.list({ page: { limit: 500 } });
-  for (const workspace of entries) {
-    const dir = workspace.workspaceDirectory ?? workspace.projectRootPath;
-    byDir.set(dir, [...(byDir.get(dir) ?? []), workspace.id]);
-  }
+  let cursor: string | undefined;
+  do {
+    // Paseo pages at most 200 workspaces at a time.
+    const { entries, pageInfo } = await paseo.workspaces.list({ page: { limit: 200, ...(cursor ? { cursor } : {}) } });
+    for (const workspace of entries) {
+      const dir = workspace.workspaceDirectory ?? workspace.projectRootPath;
+      byDir.set(dir, [...(byDir.get(dir) ?? []), workspace.id]);
+    }
+    cursor = pageInfo.hasMore ? (pageInfo.nextCursor ?? undefined) : undefined;
+  } while (cursor);
   return byDir;
 }
 

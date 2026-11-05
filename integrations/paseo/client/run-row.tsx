@@ -2,7 +2,7 @@
 import type { PluginTimelineItemProps } from "@getpaseo/plugin/client";
 import { ExternalLink, Icon } from "@getpaseo/plugin/client/react-native";
 import { Text, View } from "react-native";
-import { describeRow, prNumber, type Row } from "../shared/model";
+import { describeRow, type Row } from "../shared/model";
 
 function icon(row: Row): string {
   if (row.event === "parked") return "ShieldAlert";
@@ -21,7 +21,8 @@ export function RunRow({ item, theme }: PluginTimelineItemProps<Row>) {
       <Text style={{ flex: 1, minWidth: 0, color: theme.colors.foreground, fontSize: 13 }} selectable>
         {describeRow(row)}
       </Text>
-      {row.prUrl && (row.event === "pr" || row.event === "finished") ? <ExternalLink href={row.prUrl}>{prNumber(row.prUrl) ?? "PR"}</ExternalLink> : null}
+      {/* The text already names the PR number; the link is the way to it. */}
+      {row.prUrl && (row.event === "pr" || row.event === "finished") ? <ExternalLink href={row.prUrl}>Open</ExternalLink> : null}
     </View>
   );
 }
