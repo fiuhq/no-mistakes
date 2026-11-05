@@ -4,10 +4,10 @@ A [Paseo](https://paseo.sh) plugin that shows no-mistakes runs where the agents 
 
 | Placement | Shows |
 |---|---|
-| Composer pill | on every agent whose workspace is a gated checkout: the newest run's state (`nm · review 3/9`, `nm · needs you · review`, `nm · passed · #12`), with a menu to the run panel and the pull request |
+| Composer pill | on every agent whose workspace has a gated branch checked out: that branch's newest run's state (`nm · review 3/9`, `nm · needs you · review`, `nm · passed · #12`), with a menu to the run panel and the pull request |
 | Chat rows | in the chat of the agent working on that checkout: the run started, a step parked on a decision, failed or reported findings, the pull request opened, the run finished |
 | Workspace panel | that checkout's runs: steps, findings, errors, pull request (also from the Command Center: "Open no-mistakes run") |
-| Sidebar page | every run on this host from the last 7 days, each with a link to its workspace |
+| Sidebar page | every run on this host that is unfinished or changed in the last 7 days (the 200 most recent), each with a link to its workspace |
 
 It is read-only: it never answers, aborts or reruns a run. Those stay with whoever drives the run.
 
