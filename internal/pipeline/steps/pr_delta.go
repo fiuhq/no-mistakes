@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 	"unicode/utf8"
@@ -17,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
 
 // An architecture delta is a diagram-design drawing of the branch's change: the
@@ -43,6 +43,9 @@ const (
 	// The skill's own budget: at most 8 ledger entries per delta.
 	maxArchitectureDeltaChanges = 8
 	maxArchitectureDeltaText    = 300
+	// How many changed worktree paths a refusal names. The state it compares
+	// lists every ignored file, and a step error travels in one IPC frame.
+	maxArchitectureDeltaRefusalLines = 10
 )
 
 var architectureDeltaSchema = json.RawMessage(`{
@@ -123,13 +126,13 @@ func (s *PRStep) drawArchitectureDelta(sctx *pipeline.StepContext, provider scm.
 		return fmt.Errorf("read the worktree after drawing the architecture delta: %w", err)
 	}
 	if after != before {
-		return fmt.Errorf("drawing the architecture delta changed the worktree; the delta is drawn only under the run's evidence directory:\n%s", after)
+		return fmt.Errorf("drawing the architecture delta changed the worktree; the delta is drawn only under the run's evidence directory:\n%s", architectureDeltaWorktreeChange(before, after))
 	}
 	draft, err := parseArchitectureDelta(result)
 	if err != nil {
 		return err
 	}
-	if err := s.delta.runCheck(ctx, skillDir, htmlPath); err != nil {
+	if err := s.delta.runCheck(sctx, skillDir, htmlPath); err != nil {
 		return fmt.Errorf("the architecture delta fails the diagram-design self check: %w", err)
 	}
 	if err := requireArchitectureDeltaSVG(svgPath); err != nil {
@@ -160,6 +163,37 @@ func architectureDeltaWorktreeState(ctx context.Context, dir string) (string, er
 		return "", err
 	}
 	return head + "\n" + status, nil
+}
+
+// architectureDeltaWorktreeChange names the lines that differ between two
+// worktree states, bounded, so a refusal shows what moved and stays small.
+func architectureDeltaWorktreeChange(before, after string) string {
+	seen := make(map[string]int)
+	for _, line := range nonEmptyLines(before) {
+		seen[line]++
+	}
+	var changed []string
+	for _, line := range nonEmptyLines(after) {
+		if seen[line] > 0 {
+			seen[line]--
+			continue
+		}
+		changed = append(changed, line)
+	}
+	for _, line := range nonEmptyLines(before) {
+		if seen[line] > 0 {
+			seen[line]--
+			changed = append(changed, line)
+		}
+	}
+	if extra := len(changed) - maxArchitectureDeltaRefusalLines; extra > 0 {
+		changed = append(changed[:maxArchitectureDeltaRefusalLines], fmt.Sprintf("... and %d more", extra))
+	}
+	return strings.Join(changed, "\n")
+}
+
+func nonEmptyLines(text string) []string {
+	return strings.FieldsFunc(text, func(r rune) bool { return r == '\n' })
 }
 
 func architectureDeltaPrompt(skillDir, baseSHA, headSHA, htmlPath, svgPath string) string {
@@ -278,15 +312,11 @@ func (architectureDeltaDeps) findSkillIn(home string) (string, error) {
 	return "", fmt.Errorf("an architecture delta is required, but the diagram-design skill is not installed (looked in %s); install it with `npx skills add cathrynlavery/diagram-design`", strings.Join(candidates, " and "))
 }
 
-func (d architectureDeltaDeps) runCheck(ctx context.Context, skillDir, html string) error {
+func (d architectureDeltaDeps) runCheck(sctx *pipeline.StepContext, skillDir, html string) error {
 	if d.check != nil {
-		return d.check(ctx, skillDir, html)
+		return d.check(sctx.Ctx, skillDir, html)
 	}
-	python, err := exec.LookPath("python3")
-	if err != nil {
-		return fmt.Errorf("python3 is not on PATH: %w", err)
-	}
-	out, err := exec.CommandContext(ctx, python, "-I", filepath.Join(skillDir, "scripts", "self_check.py"), html).CombinedOutput()
+	out, err := shellenv.CombinedOutputShellCommand(stepCmd(sctx, "python3", "-I", filepath.Join(skillDir, "scripts", "self_check.py"), html))
 	if err != nil {
 		return fmt.Errorf("%w: %s", err, strings.TrimSpace(string(out)))
 	}
