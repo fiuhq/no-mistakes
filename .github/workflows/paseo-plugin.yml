@@ -1,0 +1,33 @@
+name: Paseo plugin
+
+# The plugin's queries are tested against internal/db/schema.go, so a schema change reruns them too.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "integrations/paseo/**"
+      - "internal/db/schema.go"
+      - ".github/workflows/paseo-plugin.yml"
+  push:
+    branches: [main]
+    paths:
+      - "integrations/paseo/**"
+      - "internal/db/schema.go"
+      - ".github/workflows/paseo-plugin.yml"
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: integrations/paseo
+    steps:
+      - uses: actions/checkout@v6
+      - uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: 1.4.4
+      - run: bun install --frozen-lockfile
+      - run: bun run verify

@@ -1,0 +1,23 @@
+{
+  "name": "@fiuhq/no-mistakes-paseo-plugin",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Paseo plugin for no-mistakes: run state in the composer, step changes in the chat, and every run in the sidebar",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bun test",
+    "verify": "tsc --noEmit && bun test"
+  },
+  "devDependencies": {
+    "@getpaseo/client": "0.13.2",
+    "@getpaseo/plugin": "0.13.2",
+    "@getpaseo/protocol": "0.13.2",
+    "@types/bun": "^1.4.2",
+    "@types/node": "^26.6.4",
+    "@types/react": "~19.2.9",
+    "react": "19.1.9",
+    "react-native": "0.81.6",
+    "typescript": "^7.0.2",
+    "zod": "^4.6.5"
+  }
+}

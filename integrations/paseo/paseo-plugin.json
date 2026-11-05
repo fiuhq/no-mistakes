@@ -1,0 +1,7 @@
+{
+  "id": "no-mistakes",
+  "description": "no-mistakes in Paseo: each run's state as a pill in the composer of the agents on its checkout, its step changes as rows in their chat, and every recent run on this host in the sidebar and a workspace panel",
+  "requirements": {
+    "paseo": ">=0.13.0"
+  }
+}
