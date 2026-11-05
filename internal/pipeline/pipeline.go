@@ -101,6 +101,9 @@ type StepContext struct {
 	// PublicIntentBrief is the PR-step's bounded rendering of UserIntent when
 	// trusted pr.intent.format is brief. It is never used as review criteria.
 	PublicIntentBrief string
+	// ArchitectureDelta is the PR step's drawn "## Architecture delta" section
+	// when the build requires one; it opens the description, ahead of Intent.
+	ArchitectureDelta string
 	// IntentSource records the provenance of UserIntent so steps can weigh
 	// its authority. db.RunIntentSourceAgent ("agent") means the driving
 	// agent supplied it explicitly via `axi run --intent`; db.RunIntentSourceRerun
