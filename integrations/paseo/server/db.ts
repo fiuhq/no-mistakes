@@ -17,13 +17,13 @@ export function statePath(home = nmHome()): string {
   return path.join(home, "state.sqlite");
 }
 
-/** Every run that is not finished, plus every run touched in the window. */
+/** Every run that is not finished, plus every run touched in the window; a limit cuts only the oldest finished runs. */
 export const RUNS_SQL = `
 SELECT r.id, r.branch, r.status, r.pr_url, r.error, r.created_at, r.updated_at, p.working_path
 FROM runs r JOIN repos p ON p.id = r.repo_id
 WHERE r.status IN ('pending', 'running') OR r.updated_at >= ?
-ORDER BY r.created_at DESC
-LIMIT 200`;
+ORDER BY (r.status IN ('pending', 'running')) DESC, r.created_at DESC
+LIMIT ?`;
 
 export const STEPS_SQL = `
 SELECT step_name, status, duration_ms, findings_json, error
@@ -62,9 +62,9 @@ export function parseFindings(json: string | null): { findings: number | null; s
   }
 }
 
-export function readRuns(db: DatabaseSync, sinceEpochSeconds: number): Omit<RunView, "workspaceIds">[] {
+export function readRuns(db: DatabaseSync, sinceEpochSeconds: number, limit = 200): Omit<RunView, "workspaceIds">[] {
   const steps = db.prepare(STEPS_SQL);
-  return (db.prepare(RUNS_SQL).all(sinceEpochSeconds) as unknown as RunRow[]).map((run) => ({
+  return (db.prepare(RUNS_SQL).all(sinceEpochSeconds, limit) as unknown as RunRow[]).map((run) => ({
     id: run.id,
     repoPath: run.working_path,
     branch: run.branch,

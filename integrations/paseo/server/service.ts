@@ -70,14 +70,15 @@ function cachedWorktrees(repoPath: string, now: number): Promise<Map<string, str
   return worktrees;
 }
 
-async function readState(paseo: PaseoApi | null): Promise<StateView> {
+/** `fresh` skips the worktree cache: the row writer must see a branch checked out a moment ago. */
+async function readState(paseo: PaseoApi | null, fresh = false): Promise<StateView> {
   const readAt = Date.now();
   try {
     const runs = withState(statePath(), (db) => readRuns(db, Math.floor(readAt / 1000) - WINDOW_SECONDS));
     if (!paseo) return { runs: runs.map((run) => ({ ...run, workspaceIds: [] })), readAt, problem: null };
     const byDir = await workspacesByDir(paseo);
     const repoPaths = [...new Set(runs.map((run) => run.repoPath))];
-    const worktrees = new Map(await Promise.all(repoPaths.map(async (repoPath) => [repoPath, await cachedWorktrees(repoPath, readAt)] as const)));
+    const worktrees = new Map(await Promise.all(repoPaths.map(async (repoPath) => [repoPath, await (fresh ? worktreesOf(repoPath) : cachedWorktrees(repoPath, readAt))] as const)));
     return { runs: runs.map((run) => ({ ...run, workspaceIds: workspacesFor(run, worktrees.get(run.repoPath)!, byDir) })), readAt, problem: null };
   } catch (error) {
     return { runs: [], readAt, problem: `could not read ${statePath()}: ${error instanceof Error ? error.message : String(error)}` };
@@ -139,7 +140,7 @@ class Service {
   private async publish(): Promise<void> {
     const paseo = this.paseo;
     if (!paseo) return; // nothing is recorded, so the change is announced once an API arrives
-    const state = await readState(paseo);
+    const state = await readState(paseo, true);
     if (state.problem) return log(state.problem);
     const seen = readSeen();
     const next: Record<string, Seen> = {};

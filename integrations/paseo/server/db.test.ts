@@ -61,6 +61,16 @@ describe("readRuns against internal/db/schema.go", () => {
     run.run("new-done", "completed", 500);
     expect(readRuns(db, 400).map((r) => r.id).sort()).toEqual(["new-done", "old-running"]);
   });
+
+  test("the limit cuts newer finished runs before an older unfinished one", () => {
+    const db = daemonSchema();
+    db.prepare("INSERT INTO repos (id, working_path, upstream_url, created_at) VALUES ('r', '/w', 'u', 1)").run();
+    const run = db.prepare("INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES (?, 'r', 'b', 'h', 'b', ?, ?, 500)");
+    run.run("parked", "running", 1);
+    run.run("done-2", "completed", 2);
+    run.run("done-3", "completed", 3);
+    expect(readRuns(db, 400, 2).map((r) => r.id)).toEqual(["parked", "done-3"]);
+  });
 });
 
 describe("parseFindings", () => {
