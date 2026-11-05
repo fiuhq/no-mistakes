@@ -22,7 +22,7 @@ export const RUNS_SQL = `
 SELECT r.id, r.branch, r.status, r.pr_url, r.error, r.created_at, r.updated_at, p.working_path
 FROM runs r JOIN repos p ON p.id = r.repo_id
 WHERE r.status IN ('pending', 'running') OR r.updated_at >= ?
-ORDER BY (r.status IN ('pending', 'running')) DESC, r.created_at DESC
+ORDER BY (r.status IN ('pending', 'running')) DESC, r.updated_at DESC
 LIMIT ?`;
 
 export const STEPS_SQL = `

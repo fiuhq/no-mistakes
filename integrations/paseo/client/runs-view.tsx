@@ -16,7 +16,7 @@ const STEP_MARK: Record<string, string> = {
   awaiting_approval: "⏸",
   running: "●",
   fixing: "●",
-  fix_review: "●",
+  fix_review: "⏸",
   pending: "○",
 };
 

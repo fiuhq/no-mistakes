@@ -41,6 +41,8 @@ export type StateView = z.infer<typeof StateViewSchema>;
 /** Run statuses after which nothing more happens (internal/types/types.go RunStatus). */
 const TERMINAL = new Set(["completed", "failed", "cancelled", "checks_passed", "handed_off", "ci_monitor_interrupted"]);
 const PASSED = new Set(["completed", "checks_passed", "handed_off", "ci_monitor_interrupted"]);
+/** Step statuses in which the step waits on a human: the first park, and the park after a fix round (internal/pipeline/executor.go). */
+export const PARKED = new Set(["awaiting_approval", "fix_review"]);
 /** Step statuses in which the step is the one the run is on now. */
 const ACTIVE_STEP = new Set(["running", "awaiting_approval", "fixing", "fix_review"]);
 
@@ -58,7 +60,7 @@ export function verdict(run: RunView): Verdict {
   if (run.status === "cancelled") return "cancelled";
   if (run.status === "failed") return "failed";
   if (PASSED.has(run.status)) return "passed";
-  return run.steps.some((step) => step.status === "awaiting_approval") ? "needs-you" : "running";
+  return run.steps.some((step) => PARKED.has(step.status)) ? "needs-you" : "running";
 }
 
 export function prNumber(url: string | null): string | null {
@@ -149,7 +151,7 @@ export function rowsFor(prev: Seen | undefined, run: Omit<RunView, "workspaceIds
     const before = prev?.steps[step.name];
     if (before === step.status) continue;
     const stepRow = { ...base, step: step.name, status: step.status, findings: step.findings, summary: step.summary, error: step.error };
-    if (step.status === "awaiting_approval") rows.push({ ...stepRow, event: "parked" });
+    if (PARKED.has(step.status)) rows.push({ ...stepRow, event: "parked" });
     else if (step.status === "failed") rows.push({ ...stepRow, event: "step" });
     else if (step.status === "completed" && (step.findings ?? 0) > 0) rows.push({ ...stepRow, event: "step" });
   }

@@ -65,11 +65,21 @@ describe("readRuns against internal/db/schema.go", () => {
   test("the limit cuts newer finished runs before an older unfinished one", () => {
     const db = daemonSchema();
     db.prepare("INSERT INTO repos (id, working_path, upstream_url, created_at) VALUES ('r', '/w', 'u', 1)").run();
-    const run = db.prepare("INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES (?, 'r', 'b', 'h', 'b', ?, ?, 500)");
-    run.run("parked", "running", 1);
-    run.run("done-2", "completed", 2);
-    run.run("done-3", "completed", 3);
+    const run = db.prepare("INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES (?, 'r', 'b', 'h', 'b', ?, ?, ?)");
+    run.run("parked", "running", 1, 501);
+    run.run("done-2", "completed", 2, 502);
+    run.run("done-3", "completed", 3, 503);
     expect(readRuns(db, 400, 2).map((r) => r.id)).toEqual(["parked", "done-3"]);
+  });
+
+  test("a long-parked run that just finished outranks runs created after it", () => {
+    const db = daemonSchema();
+    db.prepare("INSERT INTO repos (id, working_path, upstream_url, created_at) VALUES ('r', '/w', 'u', 1)").run();
+    const run = db.prepare("INSERT INTO runs (id, repo_id, branch, head_sha, base_sha, status, created_at, updated_at) VALUES (?, 'r', 'b', 'h', 'b', 'completed', ?, ?)");
+    run.run("just-finished", 1, 900);
+    run.run("done-2", 2, 500);
+    run.run("done-3", 3, 600);
+    expect(readRuns(db, 400, 2).map((r) => r.id)).toEqual(["just-finished", "done-3"]);
   });
 });
 

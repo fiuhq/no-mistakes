@@ -27,6 +27,11 @@ describe("pill", () => {
   test("names the step a running run is on and how far along it is", () => {
     expect(pillLabel(run(["completed", "completed", "running"]))).toBe("review 3/9");
   });
+  test("a park after a fix round is a decision too", () => {
+    const reparked = run(["completed", "completed", "fix_review"]);
+    expect(verdict(reparked)).toBe("needs-you");
+    expect(pillLabel(reparked)).toBe("needs you · review");
+  });
   test("puts a parked run's decision first", () => {
     const parked = run(["completed", "completed", "awaiting_approval"]);
     expect(verdict(parked)).toBe("needs-you");
@@ -90,7 +95,7 @@ describe("announce", () => {
     const started = announce(undefined, run(["completed", "completed", "running"]));
     const parked = announce(started.seen, run(["completed", "completed", "awaiting_approval"]));
     const fixing = announce(parked.seen, run(["completed", "completed", "fixing"]));
-    const reparked = announce(fixing.seen, run(["completed", "completed", "awaiting_approval"]));
+    const reparked = announce(fixing.seen, run(["completed", "completed", "fix_review"]));
 
     expect(fixing.rows).toEqual([]);
     expect([...parked.rows, ...reparked.rows].map(({ id, row }) => [id, row.event, row.step])).toEqual([
