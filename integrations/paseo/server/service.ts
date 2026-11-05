@@ -70,15 +70,18 @@ function cachedWorktrees(repoPath: string, now: number): Promise<Map<string, str
   return worktrees;
 }
 
-/** `fresh` skips the worktree cache: the row writer must see a branch checked out a moment ago. */
-async function readState(paseo: PaseoApi | null, fresh = false): Promise<StateView> {
+function readWindow(now: number): Omit<RunView, "workspaceIds">[] {
+  return withState(statePath(), (db) => readRuns(db, Math.floor(now / 1000) - WINDOW_SECONDS));
+}
+
+async function readState(paseo: PaseoApi | null): Promise<StateView> {
   const readAt = Date.now();
   try {
-    const runs = withState(statePath(), (db) => readRuns(db, Math.floor(readAt / 1000) - WINDOW_SECONDS));
+    const runs = readWindow(readAt);
     if (!paseo) return { runs: runs.map((run) => ({ ...run, workspaceIds: [] })), readAt, problem: null };
     const byDir = await workspacesByDir(paseo);
     const repoPaths = [...new Set(runs.map((run) => run.repoPath))];
-    const worktrees = new Map(await Promise.all(repoPaths.map(async (repoPath) => [repoPath, await (fresh ? worktreesOf(repoPath) : cachedWorktrees(repoPath, readAt))] as const)));
+    const worktrees = new Map(await Promise.all(repoPaths.map(async (repoPath) => [repoPath, await cachedWorktrees(repoPath, readAt)] as const)));
     return { runs: runs.map((run) => ({ ...run, workspaceIds: workspacesFor(run, worktrees.get(run.repoPath)!, byDir) })), readAt, problem: null };
   } catch (error) {
     return { runs: [], readAt, problem: `could not read ${statePath()}: ${error instanceof Error ? error.message : String(error)}` };
@@ -90,10 +93,10 @@ async function readState(paseo: PaseoApi | null, fresh = false): Promise<StateVi
  * ponytail: "most recently active" stands in for "the agent that pushed"; record the pusher on the run
  * (no-mistakes has no caller field yet) if two agents in one worktree ever get each other's rows.
  */
-async function agentFor(paseo: PaseoApi, run: RunView): Promise<string | null> {
-  if (run.workspaceIds.length === 0) return null;
+async function agentFor(paseo: PaseoApi, workspaceIds: readonly string[]): Promise<string | null> {
+  if (workspaceIds.length === 0) return null;
   const { entries } = await paseo.agents.list({ sort: [{ key: "updated_at", direction: "desc" }], page: { limit: 200 } });
-  const agent = entries.map((entry) => entry.agent).find((a) => !a.archivedAt && a.workspaceId && run.workspaceIds.includes(a.workspaceId));
+  const agent = entries.map((entry) => entry.agent).find((a) => !a.archivedAt && a.workspaceId && workspaceIds.includes(a.workspaceId));
   return agent?.id ?? null;
 }
 
@@ -136,20 +139,27 @@ class Service {
     this.timer.unref();
   }
 
-  /** Appends each changed run's rows to its agent's chat, then records what was seen. */
+  /**
+   * Appends each changed run's rows to its agent's chat, then records what was seen. Only a run with rows
+   * looks up worktrees, uncached, so a branch checked out a moment ago still finds its workspace.
+   */
   private async publish(): Promise<void> {
     const paseo = this.paseo;
     if (!paseo) return; // nothing is recorded, so the change is announced once an API arrives
-    const state = await readState(paseo, true);
-    if (state.problem) return log(state.problem);
     const seen = readSeen();
     const next: Record<string, Seen> = {};
-    for (const run of state.runs) {
+    const changed: { run: Omit<RunView, "workspaceIds">; rows: ReturnType<typeof announce>["rows"] }[] = [];
+    for (const run of readWindow(Date.now())) {
       const { rows, seen: runSeen } = announce(seen?.[run.id], run);
       next[run.id] = runSeen;
       // First start on this host: everything already there is the baseline, not news.
-      if (!seen || rows.length === 0) continue;
-      const agentId = await agentFor(paseo, run);
+      if (seen && rows.length > 0) changed.push({ run, rows });
+    }
+    const byDir = changed.length > 0 ? await workspacesByDir(paseo) : new Map<string, string[]>();
+    const repoPaths = [...new Set(changed.map(({ run }) => run.repoPath))];
+    const worktrees = new Map(await Promise.all(repoPaths.map(async (repoPath) => [repoPath, await worktreesOf(repoPath)] as const)));
+    for (const { run, rows } of changed) {
+      const agentId = await agentFor(paseo, workspacesFor(run, worktrees.get(run.repoPath)!, byDir));
       if (!agentId) continue;
       for (const { id, row } of rows) {
         try {

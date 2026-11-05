@@ -24,7 +24,7 @@ export const RunViewSchema = z.object({
   createdAt: z.number(),
   updatedAt: z.number(),
   steps: z.array(StepViewSchema),
-  /** The Paseo workspaces whose directory is this checkout. */
+  /** The Paseo workspaces sitting in a worktree of this checkout that has the run's branch checked out. */
   workspaceIds: z.array(z.string()),
 });
 export type RunView = z.infer<typeof RunViewSchema>;
@@ -133,7 +133,7 @@ export interface Seen {
   rows?: number;
 }
 
-export function seenOf(run: RunView): Seen {
+export function seenOf(run: Omit<RunView, "workspaceIds">): Seen {
   return { status: run.status, steps: Object.fromEntries(run.steps.map((s) => [s.name, s.status])), prUrl: run.prUrl };
 }
 
@@ -141,7 +141,7 @@ export function seenOf(run: RunView): Seen {
  * The rows a run earns between two reads. A clean run earns three (started, PR opened, passed); a step adds
  * one when it parks on a decision, fails, or completes with findings. `prev` undefined means the run is new.
  */
-export function rowsFor(prev: Seen | undefined, run: RunView): Row[] {
+export function rowsFor(prev: Seen | undefined, run: Omit<RunView, "workspaceIds">): Row[] {
   const base = { runId: run.id, branch: run.branch, step: null, findings: null, summary: null, prUrl: run.prUrl, error: null };
   const rows: Row[] = [];
   if (!prev) rows.push({ ...base, event: "started", status: run.status });
@@ -163,7 +163,7 @@ export function rowsFor(prev: Seen | undefined, run: RunView): Row[] {
  * number within the run, so a step that parks again gets a new row while re-announcing the same change (seen
  * not yet recorded) reuses the same ids.
  */
-export function announce(prev: Seen | undefined, run: RunView): { rows: { id: string; row: Row }[]; seen: Seen } {
+export function announce(prev: Seen | undefined, run: Omit<RunView, "workspaceIds">): { rows: { id: string; row: Row }[]; seen: Seen } {
   const before = prev?.rows ?? 0;
   const rows = rowsFor(prev, run).map((row, i) => ({ id: `nm-${run.id}-${before + i}`, row }));
   return { rows, seen: { ...seenOf(run), rows: before + rows.length } };
