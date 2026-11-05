@@ -3,13 +3,16 @@
  * whenever one of its runs changes. The change signal is the daemon writing its state database (an fs watch on
  * NM_HOME), never a timer.
  */
-import type { PaseoApi } from "@getpaseo/client";
+import type { PluginHookContext } from "@getpaseo/plugin/server";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { announce, ROW_KIND, ROW_VERSION, type RunView, type Seen, type StateView } from "../shared/model";
 import { nmHome, readRuns, statePath, withState } from "./db";
 import { canonical, workspacesFor, worktreesOf } from "./worktrees";
+
+/** The host supplies only `@getpaseo/plugin*` to a plugin installed from Git, so the API type comes from there. */
+type PaseoApi = PluginHookContext["paseo"];
 
 /** Finished runs older than this drop out of the views. */
 const WINDOW_SECONDS = 7 * 24 * 60 * 60;
