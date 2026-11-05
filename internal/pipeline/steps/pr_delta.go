@@ -43,22 +43,19 @@ const (
 	// The skill's own budget: at most 8 ledger entries per delta.
 	maxArchitectureDeltaChanges = 8
 	maxArchitectureDeltaText    = 300
-	maxArchitectureDeltaSVG     = 10 << 20
 )
 
 var architectureDeltaSchema = json.RawMessage(`{
 	"type": "object",
 	"properties": {
-		"title": {"type": "string", "maxLength": 120},
 		"alt": {"type": "string", "maxLength": 300},
 		"changes": {"type": "array", "minItems": 1, "maxItems": 8, "items": {"type": "string", "maxLength": 300}}
 	},
-	"required": ["title", "alt", "changes"],
+	"required": ["alt", "changes"],
 	"additionalProperties": false
 }`)
 
 type architectureDeltaDraft struct {
-	Title   string   `json:"title"`
 	Alt     string   `json:"alt"`
 	Changes []string `json:"changes"`
 }
@@ -106,7 +103,7 @@ func (s *PRStep) drawArchitectureDelta(sctx *pipeline.StepContext, provider scm.
 	svgPath := filepath.Join(dir, architectureDeltaSVG)
 
 	ctx := sctx.Ctx
-	before, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	before, err := architectureDeltaWorktreeState(ctx, sctx.WorkDir)
 	if err != nil {
 		return fmt.Errorf("read the worktree before drawing the architecture delta: %w", err)
 	}
@@ -121,7 +118,7 @@ func (s *PRStep) drawArchitectureDelta(sctx *pipeline.StepContext, provider scm.
 	if err != nil {
 		return fmt.Errorf("draw the architecture delta: %w", err)
 	}
-	after, err := git.Run(ctx, sctx.WorkDir, "status", "--porcelain")
+	after, err := architectureDeltaWorktreeState(ctx, sctx.WorkDir)
 	if err != nil {
 		return fmt.Errorf("read the worktree after drawing the architecture delta: %w", err)
 	}
@@ -151,6 +148,20 @@ func (s *PRStep) drawArchitectureDelta(sctx *pipeline.StepContext, provider scm.
 	return nil
 }
 
+// architectureDeltaWorktreeState is HEAD plus every changed, untracked and
+// ignored path, so a commit or a write to an ignored path shows as a change.
+func architectureDeltaWorktreeState(ctx context.Context, dir string) (string, error) {
+	head, err := git.Run(ctx, dir, "rev-parse", "HEAD")
+	if err != nil {
+		return "", err
+	}
+	status, err := git.Run(ctx, dir, "status", "--porcelain=v1", "--untracked-files=all", "--ignored")
+	if err != nil {
+		return "", err
+	}
+	return head + "\n" + status, nil
+}
+
 func architectureDeltaPrompt(skillDir, baseSHA, headSHA, htmlPath, svgPath string) string {
 	return fmt.Sprintf(`Draw an architecture delta of this branch's change with the diagram-design skill.
 
@@ -162,12 +173,12 @@ What to draw:
 - A change without a topology change (a fix inside one module, docs, config) still gets a delta: the touched components marked CHANGED, with the ledger saying what changed in each.
 
 Files:
-1. Write the diagram to %[4]s. Write nothing anywhere else: do not create, edit or delete any file in the repository.
+The workspace boundary above allows writes outside the worktree only when a prompt explicitly asks for them. This prompt is that explicit request: the two files below are this run's evidence, and they belong in that evidence directory, outside the worktree.
+1. Write the diagram to %[4]s. Write nothing anywhere else: do not create, edit or delete any file in the repository, and make no commit.
 2. Run python3 -I %[1]s/scripts/self_check.py %[4]s and fix the diagram until it passes.
 3. Run python3 -I %[1]s/scripts/export_svg.py --system-fonts %[4]s %[5]s.
 
 Return JSON:
-- title: the delta's title, as the diagram shows it.
 - alt: one sentence describing the delta for a reader who cannot see the image.
 - changes: the Changes ledger, one entry per line in the diagram's order, each starting with its uppercase change word (ADDED, REMOVED, CHANGED, MOVED or REWIRED).
 `, skillDir, baseSHA, headSHA, htmlPath, svgPath)
@@ -181,10 +192,9 @@ func parseArchitectureDelta(result *agent.Result) (architectureDeltaDraft, error
 	if err := json.Unmarshal(result.Output, &draft); err != nil {
 		return draft, fmt.Errorf("the architecture delta agent returned unreadable JSON: %w", err)
 	}
-	draft.Title = oneLine(draft.Title)
 	draft.Alt = oneLine(draft.Alt)
-	if draft.Title == "" || draft.Alt == "" {
-		return draft, errors.New("the architecture delta agent returned no title or alt text")
+	if draft.Alt == "" {
+		return draft, errors.New("the architecture delta agent returned no alt text")
 	}
 	if len(draft.Changes) == 0 || len(draft.Changes) > maxArchitectureDeltaChanges {
 		return draft, fmt.Errorf("the architecture delta ledger has %d entries; the skill allows 1 to %d", len(draft.Changes), maxArchitectureDeltaChanges)
@@ -212,16 +222,9 @@ func oneLine(text string) string {
 }
 
 func requireArchitectureDeltaSVG(path string) error {
-	info, err := os.Stat(path)
-	if err != nil {
-		return fmt.Errorf("the architecture delta was not exported to SVG: %w", err)
-	}
-	if info.Size() == 0 || info.Size() > maxArchitectureDeltaSVG {
-		return fmt.Errorf("the exported architecture delta is %d bytes; it must be between 1 byte and 10 MiB", info.Size())
-	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return fmt.Errorf("read the exported architecture delta: %w", err)
+		return fmt.Errorf("the architecture delta was not exported to SVG: %w", err)
 	}
 	if !bytes.Contains(data, []byte(`data-diagram="architecture-delta"`)) {
 		return errors.New(`the exported SVG is not an architecture delta: it carries no data-diagram="architecture-delta"`)
@@ -269,9 +272,6 @@ func (architectureDeltaDeps) findSkillIn(home string) (string, error) {
 	}
 	for _, dir := range candidates {
 		if _, err := os.Stat(filepath.Join(dir, "SKILL.md")); err == nil {
-			if real, err := filepath.EvalSymlinks(dir); err == nil {
-				return real, nil
-			}
 			return dir, nil
 		}
 	}

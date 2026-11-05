@@ -82,8 +82,9 @@ func publishRunEvidence(sctx *pipeline.StepContext) *evidenceLinks {
 		// answers would land on the orphan branch verbatim and permanently,
 		// with none of the bounding or home-path redaction the deliberate
 		// PR-body rendering applies. The name comes from the package that owns
-		// the location, so the two cannot drift.
-		ExcludeDirs:       []string{reviewqa.DirName},
+		// the location, so the two cannot drift. The architecture delta shares
+		// the directory too; it reaches the PR as a user attachment.
+		ExcludeDirs:       []string{reviewqa.DirName, architectureDeltaDirName},
 		Message:           message,
 		ForbiddenBranches: []string{branch, sctx.Repo.DefaultBranch},
 	})

@@ -346,6 +346,23 @@ func TestPublishRunEvidence_NeverPublishesTheReviewConversation(t *testing.T) {
 	}
 }
 
+func TestPublishRunEvidence_NeverPublishesTheArchitectureDelta(t *testing.T) {
+	t.Parallel()
+	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
+	writeRunEvidence(t, sctx, map[string]string{
+		"cli-run.txt": "it works\n",
+		filepath.ToSlash(filepath.Join(architectureDeltaDirName, architectureDeltaSVG)): "<svg></svg>",
+	})
+
+	if links := publishRunEvidence(sctx); links == nil {
+		t.Fatal("the real test evidence beside the delta must still publish")
+	}
+	tree := gitCmd(t, remote, "ls-tree", "-r", "--name-only", gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence"))
+	if !strings.Contains(tree, "cli-run.txt") || strings.Contains(tree, architectureDeltaDirName) {
+		t.Fatalf("want the test evidence and no delta on the evidence branch:\n%s", tree)
+	}
+}
+
 func TestPublishRunEvidence_RedactsRunWorktreePaths(t *testing.T) {
 	nmHome := t.TempDir()
 	t.Setenv("NM_HOME", nmHome)

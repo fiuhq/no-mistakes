@@ -10,6 +10,7 @@ import (
 	"testing"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
+	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -19,7 +20,7 @@ const testDeltaURL = "https://github.com/user-attachments/assets/0b1d2c3e-4f50-4
 
 const testDeltaSVG = `<svg xmlns="http://www.w3.org/2000/svg" data-diagram="architecture-delta" viewBox="0 0 10 10"><title>delta</title></svg>`
 
-const testDeltaJSON = `{"title":"Refused rows link to their chart","alt":"Before, refused rows are plain text; after, each links to its chart","changes":["CHANGED RefusedNewFlow gains chartSymbol","ADDED Refused row → ChartUrl link"]}`
+const testDeltaJSON = `{"alt":"Before, refused rows are plain text; after, each links to its chart","changes":["CHANGED RefusedNewFlow gains chartSymbol","ADDED Refused row → ChartUrl link"]}`
 
 func writeDelta(t *testing.T, dir, svg string) {
 	t.Helper()
@@ -111,7 +112,7 @@ func TestArchitectureDelta_OpensTheDraftedBodyAheadOfIntent(t *testing.T) {
 		t.Fatalf("uploads = %v, want the one SVG", c.uploader.calls)
 	}
 	prompt := c.agent.calls[0].Prompt
-	for _, want := range []string{"references/type-architecture-delta.md", "scripts/self_check.py", "export_svg.py --system-fonts", c.baseSHA, filepath.Join(c.sctx.EvidenceDir, architectureDeltaDirName)} {
+	for _, want := range []string{"This prompt is that explicit request", "make no commit", "references/type-architecture-delta.md", "scripts/self_check.py", "export_svg.py --system-fonts", c.baseSHA, filepath.Join(c.sctx.EvidenceDir, architectureDeltaDirName)} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("delta prompt lacks %q:\n%s", want, prompt)
 		}
@@ -178,6 +179,26 @@ func TestArchitectureDelta_RefusesEveryWayItCannotBeDrawn(t *testing.T) {
 				}
 			}
 		}, wantErr: "changed the worktree"},
+		{name: "committed during the turn", draw: func(t *testing.T) func(*pipeline.StepContext, string) {
+			return func(sctx *pipeline.StepContext, dir string) {
+				writeDelta(t, dir, testDeltaSVG)
+				gitCmd(t, sctx.WorkDir, "commit", "--allow-empty", "-m", "delta")
+			}
+		}, wantErr: "changed the worktree"},
+		{name: "wrote to an ignored path", draw: func(t *testing.T) func(*pipeline.StepContext, string) {
+			return func(sctx *pipeline.StepContext, dir string) {
+				writeDelta(t, dir, testDeltaSVG)
+				exclude := filepath.Join(sctx.WorkDir, ".git", "info", "exclude")
+				if err := os.MkdirAll(filepath.Dir(exclude), 0o755); err != nil {
+					t.Fatal(err)
+				}
+				for path, body := range map[string]string{exclude: "*.ignored\n", filepath.Join(sctx.WorkDir, "delta.ignored"): "x"} {
+					if err := os.WriteFile(path, []byte(body), 0o644); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+		}, wantErr: "changed the worktree"},
 		{name: "upload fails", draw: drawGood, setup: func(c *deltaCase) { c.uploader.err = errors.New("401") }, wantErr: "attach the architecture delta: 401"},
 	}
 	for _, tc := range cases {
@@ -200,11 +221,11 @@ func TestArchitectureDelta_RefusesEveryWayItCannotBeDrawn(t *testing.T) {
 
 func TestArchitectureDelta_LedgerIsBoundedAndOneLinePerEntry(t *testing.T) {
 	t.Parallel()
-	nine := `{"title":"t","alt":"a","changes":["ADDED 1","ADDED 2","ADDED 3","ADDED 4","ADDED 5","ADDED 6","ADDED 7","ADDED 8","ADDED 9"]}`
+	nine := `{"alt":"a","changes":["ADDED 1","ADDED 2","ADDED 3","ADDED 4","ADDED 5","ADDED 6","ADDED 7","ADDED 8","ADDED 9"]}`
 	if _, err := parseArchitectureDelta(&agent.Result{Output: json.RawMessage(nine)}); err == nil || !strings.Contains(err.Error(), "has 9 entries") {
 		t.Fatalf("err = %v, want the 8-entry budget refused", err)
 	}
-	draft, err := parseArchitectureDelta(&agent.Result{Output: json.RawMessage(`{"title":" t ","alt":"a [x]","changes":["ADDED a\n## Testing"]}`)})
+	draft, err := parseArchitectureDelta(&agent.Result{Output: json.RawMessage(`{"alt":"a [x]","changes":["ADDED a\n## Testing"]}`)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -217,9 +238,14 @@ func TestArchitectureDelta_LedgerIsBoundedAndOneLinePerEntry(t *testing.T) {
 	}
 }
 
-func TestArchitectureDelta_IsAGeneratedSection(t *testing.T) {
-	t.Parallel()
+// Not parallel: it stamps the package-global build value.
+func TestArchitectureDelta_IsGeneratedOnlyOnAStampedBuild(t *testing.T) {
 	body := "## What Changed\n\n- demo\n\n## Architecture delta\n\n![x](y)"
+	if got := stripGeneratedSections(body); !strings.Contains(got, "Architecture delta") {
+		t.Fatalf("an unstamped build must keep an author's section, got:\n%s", got)
+	}
+	buildinfo.ArchitectureDelta = architectureDeltaRequired
+	t.Cleanup(func() { buildinfo.ArchitectureDelta = "" })
 	if got := stripGeneratedSections(body); strings.Contains(got, "Architecture delta") {
 		t.Fatalf("a drafted body must not carry its own delta section, got:\n%s", got)
 	}

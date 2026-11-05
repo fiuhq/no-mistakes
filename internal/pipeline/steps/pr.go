@@ -1789,8 +1789,11 @@ func isGeneratedSectionHeading(line string) bool {
 	heading = strings.ToLower(heading)
 
 	switch heading {
-	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues", "architecture delta":
+	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues":
 		return true
+	case "architecture delta":
+		// Generated only where the build draws one; elsewhere it is author text.
+		return architectureDeltaDeps{}.required()
 	default:
 		return false
 	}
