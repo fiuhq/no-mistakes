@@ -15,6 +15,10 @@ var (
 	Date               = "unknown"
 	TelemetryHost      = ""
 	TelemetryWebsiteID = ""
+	// ArchitectureDelta, stamped "required" at build time, makes the PR step
+	// open every pull request with a diagram-design architecture delta and
+	// fail when it cannot draw one. Unset, the PR step draws nothing.
+	ArchitectureDelta = ""
 )
 
 func CurrentVersion() string {

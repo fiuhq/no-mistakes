@@ -32,6 +32,8 @@ type PRStep struct {
 	// will replace the drafted one, so the drafted title is neither validated
 	// nor formatted: discarded text must not block publishing.
 	titleReplaced bool
+	// delta draws the architecture delta a build may require (pr_delta.go).
+	delta architectureDeltaDeps
 }
 
 type prContent struct {
@@ -167,6 +169,9 @@ func (s *PRStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, err
 		return nil, err
 	}
 	bodyLimit := scm.HostMaxPRBodyChars(host)
+	if err := s.drawArchitectureDelta(sctx, provider, baseSHA); err != nil {
+		return nil, err
+	}
 	sctx.Log(fmt.Sprintf("checking for existing pull request on branch %s...", branch))
 	existing, err := host.FindPR(ctx, branch, "")
 	if err != nil {
@@ -1039,11 +1044,15 @@ func buildPRBodyFull(body, riskLine, testingMD, pipelineMD string, sctx *pipelin
 	// Neutralized for the same reason as in prependIntentSection: intent is
 	// agent-extracted text placed ahead of the pipeline section.
 	cleaned := neutralizeAttestationMarkers(provider, publicPRIntent(sctx))
-	if cleaned == "" {
+	intent := ""
+	if cleaned != "" {
+		intent = "## Intent\n\n" + cleaned
+	}
+	// The architecture delta leads, ahead of Intent, within the same budget.
+	intent = withArchitectureDelta(sctx, intent)
+	if intent == "" {
 		return sections
 	}
-
-	intent := "## Intent\n\n" + cleaned
 	separator := "\n\n"
 	if len(intent)+len(separator)+len(sections) <= maxBytes {
 		return intent + separator + sections
@@ -1780,7 +1789,7 @@ func isGeneratedSectionHeading(line string) bool {
 	heading = strings.ToLower(heading)
 
 	switch heading {
-	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues":
+	case "intent", "risk assessment", "testing", "tests", "pipeline", "issues", "architecture delta":
 		return true
 	default:
 		return false
@@ -1798,13 +1807,13 @@ func prependIntentSection(body string, sctx *pipeline.StepContext) string {
 	// can. See appendGeneratedSectionsToCleanBodyWithinLimit.
 	cleaned := neutralizeAttestationMarkers(resolvedProviderForBody(sctx), publicPRIntent(sctx))
 	if cleaned == "" {
-		return body
+		return withArchitectureDelta(sctx, body)
 	}
 	section := "## Intent\n\n" + cleaned
 	if strings.TrimSpace(body) == "" {
-		return section
+		return withArchitectureDelta(sctx, section)
 	}
-	return section + "\n\n" + body
+	return withArchitectureDelta(sctx, section+"\n\n"+body)
 }
 
 func (s *PRStep) fallbackPRContent(sctx *pipeline.StepContext, finalDiff, riskLine, testingMD, pipelineMD string, bodyLimit int, provider scm.Provider) (prContent, error) {

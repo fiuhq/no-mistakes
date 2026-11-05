@@ -235,6 +235,9 @@ func (s *PRStep) buildPRAppendix(sctx *pipeline.StepContext, provider scm.Provid
 		return "", err
 	}
 	parts := []string{}
+	if sctx.ArchitectureDelta != "" {
+		parts = append(parts, sctx.ArchitectureDelta)
+	}
 	if intent := publicPRIntent(sctx); intent != "" {
 		parts = append(parts, "## Intent\n\n"+neutralizeAttestationMarkers(provider, intent))
 	}
