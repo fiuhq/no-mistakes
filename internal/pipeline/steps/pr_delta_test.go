@@ -74,7 +74,12 @@ func newDeltaCase(t *testing.T, draw func(sctx *pipeline.StepContext, dir string
 	c.step = &PRStep{mediaUploader: c.uploader, delta: architectureDeltaDeps{
 		mode:     architectureDeltaRequired,
 		skillDir: func() (string, error) { return skill, nil },
-		check:    func(context.Context, string, string) error { return nil },
+		check: func(_ context.Context, skillDir, html string) error {
+			if want := filepath.Join(c.sctx.EvidenceDir, architectureDeltaDirName, architectureDeltaHTML); skillDir != skill || html != want {
+				return fmt.Errorf("checked %s with %s, want %s with %s", html, skillDir, want, skill)
+			}
+			return nil
+		},
 	}}
 	return c
 }
@@ -218,7 +223,7 @@ func TestArchitectureDelta_RunsTheSkillsSelfCheck(t *testing.T) {
 		script  string
 		wantErr string
 	}{
-		"passes":   {script: "#!/bin/sh\necho OK \"$3\"\n"},
+		"passes":   {script: "#!/bin/sh\n[ \"$1 $2 $3\" = \"-I /skill/scripts/self_check.py /run/delta.html\" ] || { echo \"wrong args: $*\"; exit 2; }\necho OK\n"},
 		"fails it": {script: "#!/bin/sh\necho 'painted outside viewBox'\nexit 3\n", wantErr: "painted outside viewBox"},
 	} {
 		t.Run(name, func(t *testing.T) {
