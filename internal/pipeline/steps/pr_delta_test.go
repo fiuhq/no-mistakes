@@ -7,8 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
@@ -43,6 +45,8 @@ type deltaCase struct {
 	baseSHA  string
 	// result replaces the delta agent's answer, when set.
 	result func() (*agent.Result, error)
+	// emptyDir is a directory with no executables in it.
+	emptyDir string
 }
 
 // newDeltaCase is a PR step whose build requires a delta, with a skill dir,
@@ -51,7 +55,7 @@ type deltaCase struct {
 func newDeltaCase(t *testing.T, draw func(sctx *pipeline.StepContext, dir string)) *deltaCase {
 	t.Helper()
 	dir, baseSHA, headSHA := setupGitRepo(t)
-	c := &deltaCase{baseSHA: baseSHA}
+	c := &deltaCase{baseSHA: baseSHA, emptyDir: t.TempDir()}
 	c.agent = &mockAgent{name: "test"}
 	c.sctx = newTestContextWithDBRecords(t, c.agent, dir, baseSHA, headSHA, config.Commands{})
 	enableDefaultEvidence(c.sctx)
@@ -205,6 +209,60 @@ func TestArchitectureDelta_RefusalNamesOnlyWhatChangedAndStaysSmall(t *testing.T
 	}
 }
 
+func TestArchitectureDelta_RunsTheSkillsSelfCheck(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the stand-in python3 is a POSIX script")
+	}
+	t.Parallel()
+	for name, tc := range map[string]struct {
+		script  string
+		wantErr string
+	}{
+		"passes":   {script: "#!/bin/sh\necho OK \"$3\"\n"},
+		"fails it": {script: "#!/bin/sh\necho 'painted outside viewBox'\nexit 3\n", wantErr: "painted outside viewBox"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			t.Parallel()
+			c := newDeltaCase(t, drawGood(t))
+			bin := t.TempDir()
+			if err := os.WriteFile(filepath.Join(bin, "python3"), []byte(tc.script), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			c.sctx.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
+			err := architectureDeltaDeps{}.runCheck(c.sctx, "/skill", "/run/delta.html")
+			if tc.wantErr == "" && err != nil {
+				t.Fatal(err)
+			}
+			if tc.wantErr != "" && (err == nil || !strings.Contains(err.Error(), tc.wantErr)) {
+				t.Fatalf("err = %v, want it to contain %q", err, tc.wantErr)
+			}
+		})
+	}
+}
+
+func TestArchitectureDelta_RedactsTheAttachedSVG(t *testing.T) {
+	t.Parallel()
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var svgPath string
+	c := newDeltaCase(t, func(sctx *pipeline.StepContext, dir string) {
+		svgPath = filepath.Join(dir, architectureDeltaSVG)
+		writeDelta(t, dir, strings.Replace(testDeltaSVG, "<title>delta</title>", "<title>"+filepath.Join(home, "secret", "plan.md")+" "+filepath.Join(sctx.WorkDir, "app.go")+"</title>", 1))
+	})
+	if err := c.step.drawArchitectureDelta(c.sctx, scm.ProviderGitHub, c.baseSHA); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(svgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(data), home) || strings.Contains(string(data), c.sctx.WorkDir) {
+		t.Fatalf("the attachment still names a machine path:\n%s", data)
+	}
+}
+
 func TestArchitectureDelta_DrawnOncePerStep(t *testing.T) {
 	t.Parallel()
 	c := newDeltaCase(t, drawGood(t))
@@ -269,6 +327,11 @@ func TestArchitectureDelta_RefusesEveryWayItCannotBeDrawn(t *testing.T) {
 				}
 			}
 		}, wantErr: "changed the worktree"},
+		{name: "no evidence directory", draw: drawGood, setup: func(c *deltaCase) { c.sctx.EvidenceDir = "" }, wantErr: "no evidence directory"},
+		{name: "no GitHub token to attach it", draw: drawGood, setup: func(c *deltaCase) {
+			c.step.mediaUploader = nil
+			c.sctx.Env = []string{"PATH=" + c.emptyDir}
+		}, wantErr: "no usable GitHub token"},
 		{name: "agent fails", draw: drawGood, setup: func(c *deltaCase) {
 			c.result = func() (*agent.Result, error) { return nil, errors.New("quota") }
 		}, wantErr: "draw the architecture delta: quota"},
@@ -303,6 +366,18 @@ func TestArchitectureDelta_LedgerIsBoundedAndOneLinePerEntry(t *testing.T) {
 	nine := `{"alt":"a","changes":["ADDED 1","ADDED 2","ADDED 3","ADDED 4","ADDED 5","ADDED 6","ADDED 7","ADDED 8","ADDED 9"]}`
 	if _, err := parseArchitectureDelta(&agent.Result{Output: json.RawMessage(nine)}); err == nil || !strings.Contains(err.Error(), "has 9 entries") {
 		t.Fatalf("err = %v, want the 8-entry budget refused", err)
+	}
+	for raw, want := range map[string]string{
+		`{"alt":" ","changes":["ADDED a"]}`: "no alt text",
+		`{"alt":"a","changes":[]}`:          "has 0 entries",
+		`{"alt":"a","changes":[" "]}`:       "entry 1 is empty",
+	} {
+		if _, err := parseArchitectureDelta(&agent.Result{Output: json.RawMessage(raw)}); err == nil || !strings.Contains(err.Error(), want) {
+			t.Fatalf("%s: err = %v, want %q", raw, err, want)
+		}
+	}
+	if got := oneLine(strings.Repeat("é", maxArchitectureDeltaText)); len(got) > maxArchitectureDeltaText || !utf8.ValidString(got) {
+		t.Fatalf("the cap must hold and never split a character: %d bytes, valid=%v", len(got), utf8.ValidString(got))
 	}
 	draft, err := parseArchitectureDelta(&agent.Result{Output: json.RawMessage(`{"alt":"a [x]","changes":["ADDED a\n## Testing"]}`)})
 	if err != nil {

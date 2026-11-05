@@ -7,6 +7,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/db"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
@@ -346,8 +347,10 @@ func TestPublishRunEvidence_NeverPublishesTheReviewConversation(t *testing.T) {
 	}
 }
 
+// Not parallel: it stamps the package-global build value.
 func TestPublishRunEvidence_NeverPublishesTheArchitectureDelta(t *testing.T) {
-	t.Parallel()
+	buildinfo.ArchitectureDelta = architectureDeltaRequired
+	t.Cleanup(func() { buildinfo.ArchitectureDelta = "" })
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	writeRunEvidence(t, sctx, map[string]string{
 		"cli-run.txt": "it works\n",
@@ -360,6 +363,13 @@ func TestPublishRunEvidence_NeverPublishesTheArchitectureDelta(t *testing.T) {
 	tree := gitCmd(t, remote, "ls-tree", "-r", "--name-only", gitCmd(t, remote, "rev-parse", "refs/heads/no-mistakes/evidence"))
 	if !strings.Contains(tree, "cli-run.txt") || strings.Contains(tree, architectureDeltaDirName) {
 		t.Fatalf("want the test evidence and no delta on the evidence branch:\n%s", tree)
+	}
+}
+
+func TestPublishRunEvidence_UnstampedBuildExcludesNoDeltaFolder(t *testing.T) {
+	t.Parallel()
+	if dirs := architectureDeltaExcludedDirs(); len(dirs) != 0 {
+		t.Fatalf("an unstamped build must publish what it always did, excludes %v", dirs)
 	}
 }
 

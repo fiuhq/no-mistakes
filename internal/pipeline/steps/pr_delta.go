@@ -15,6 +15,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/git"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 	"github.com/kunchenguid/no-mistakes/internal/shellenv"
 )
@@ -37,9 +38,10 @@ import (
 
 const (
 	architectureDeltaRequired = "required"
-	architectureDeltaDirName  = "architecture-delta"
-	architectureDeltaHTML     = "architecture-delta.html"
-	architectureDeltaSVG      = "architecture-delta.svg"
+	// A dot name of its own, so it never meets a folder the Test step made.
+	architectureDeltaDirName = ".pr-architecture-delta"
+	architectureDeltaHTML    = "architecture-delta.html"
+	architectureDeltaSVG     = "architecture-delta.svg"
 	// The skill's own budget: at most 8 ledger entries per delta.
 	maxArchitectureDeltaChanges = 8
 	maxArchitectureDeltaText    = 300
@@ -136,6 +138,9 @@ func (s *PRStep) drawArchitectureDelta(sctx *pipeline.StepContext, provider scm.
 		return fmt.Errorf("the architecture delta fails the diagram-design self check: %w", err)
 	}
 	if err := requireArchitectureDeltaSVG(svgPath); err != nil {
+		return err
+	}
+	if err := redactArchitectureDeltaSVG(svgPath, sctx.WorkDir); err != nil {
 		return err
 	}
 	uploader := s.resolveMediaUploader(sctx, provider)
@@ -266,6 +271,23 @@ func requireArchitectureDeltaSVG(path string) error {
 	return nil
 }
 
+// redactArchitectureDeltaSVG gives the attachment the redaction every other
+// published text gets: the SVG is agent-written and goes out byte for byte.
+func redactArchitectureDeltaSVG(path, runWorktree string) error {
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return fmt.Errorf("read the exported architecture delta: %w", err)
+	}
+	redacted := safepath.RedactText(safepath.RedactWorktrees(string(data), runWorktree, nmWorktreesRoot()))
+	if redacted == string(data) {
+		return nil
+	}
+	if err := os.WriteFile(path, []byte(redacted), 0o644); err != nil {
+		return fmt.Errorf("redact the exported architecture delta: %w", err)
+	}
+	return nil
+}
+
 func renderArchitectureDelta(provider scm.Provider, draft architectureDeltaDraft, url string) string {
 	var b strings.Builder
 	b.WriteString("## Architecture delta\n\n")
@@ -285,6 +307,15 @@ func withArchitectureDelta(sctx *pipeline.StepContext, body string) string {
 		return sctx.ArchitectureDelta
 	}
 	return sctx.ArchitectureDelta + "\n\n" + body
+}
+
+// architectureDeltaExcludedDirs keeps a stamped build's drawing off the evidence
+// branch. An unstamped build draws nothing, so it excludes nothing.
+func architectureDeltaExcludedDirs() []string {
+	if (architectureDeltaDeps{}).required() {
+		return []string{architectureDeltaDirName}
+	}
+	return nil
 }
 
 func (d architectureDeltaDeps) findSkill() (string, error) {
