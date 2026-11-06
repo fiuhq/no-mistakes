@@ -503,9 +503,10 @@ func recoverOnStartup(d *db.DB, p *paths.Paths, mgr *RunManager, layout *worktre
 	// tell a crashed run's leftovers from work still in flight.
 	evidenceStarted := time.Now()
 	policy := evidenceReapPolicyFor(global)
-	root := evidenceRootFor(p, global)
-	reapEvidence(d, root, policy, now)
-	reapLegacyEvidence(d, root, policy, now)
+	roots := evidenceRootsFor(p, global, d)
+	if len(roots) > 0 {
+		reapLegacyEvidence(d, roots[0], policy, now, roots[1:]...)
+	}
 	reapRunLogs(d, p.LogsDir(), policy, now)
 	logStartupPhase("evidence_cleanup", evidenceStarted)
 
@@ -1339,14 +1340,25 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if strings.TrimSpace(p.Gate) == "" {
 			return nil, fmt.Errorf("gate path is required")
 		}
-		if _, err := ownedGateRepoID(mgr.paths, p.Gate); err != nil {
+		repoID, err := ownedGateRepoID(mgr.paths, p.Gate)
+		if err != nil {
 			return nil, err
 		}
 		result, err := classify(ctx, "", false, true)
 		if err != nil {
 			return nil, err
 		}
-		return &ipc.AdmitPushResult{Context: gateContextResult(result)}, nil
+		admission := &ipc.AdmitPushResult{Context: gateContextResult(result)}
+		if !result.Nested && p.ReviewerProfile != nil {
+			// Trusted project-instruction suppression can make an installed
+			// reviewer unrunnable, so admission needs the same fresh-policy
+			// check as AXI preflight rather than a binary-presence check alone.
+			if _, err := mgr.resolveReviewerProfile(ctx, repoID, p.ReviewerProfile); err != nil {
+				return nil, err
+			}
+			admission.ReviewerValidated = true
+		}
+		return admission, nil
 	})
 
 	srv.Handle(ipc.MethodClaimLaunchReceipt, func(_ context.Context, params json.RawMessage) (interface{}, error) {
@@ -1364,7 +1376,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err != nil {
 			return nil, err
 		}
-		run, claimed, err := d.ClaimLaunchReceiptWithPRText(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PRTextDigest, p.PiProfile)
+		run, claimed, err := d.ClaimLaunchReceiptWithPRText(p.RepoID, p.Branch, p.LaunchNonce, p.SubmittedHeadSHA, p.ValidationGeneration, p.IntentDigest, prBaseBranch, p.OmitIntent, p.PRTextDigest, p.PiProfile, p.ReviewerProfile)
 		if err != nil {
 			return nil, fmt.Errorf("claim launch receipt: %w", err)
 		}
@@ -1373,6 +1385,9 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		}
 		if !run.PiProfile.Matches(p.PiProfile) {
 			return nil, fmt.Errorf("conflicting launch_nonce: Pi profile differs from run pin")
+		}
+		if !run.ReviewerProfile.Matches(p.ReviewerProfile) {
+			return nil, fmt.Errorf("conflicting launch_nonce: reviewer differs from run pin")
 		}
 		if !launchPRBaseBranchMatches(run, prBaseBranch) {
 			return nil, conflictingLaunchPRBaseBranch(p.LaunchNonce)
@@ -1402,6 +1417,9 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 	// Capability probe for --pr-title / --pr-body-file: see ipc.ProbeRunPRTextResult.
 	srv.Handle(ipc.MethodProbeRunPRText, func(context.Context, json.RawMessage) (interface{}, error) {
 		return &ipc.ProbeRunPRTextResult{OK: true}, nil
+	})
+	srv.Handle(ipc.MethodProbeTranscriptHomes, func(context.Context, json.RawMessage) (interface{}, error) {
+		return &ipc.ProbeTranscriptHomesResult{OK: true}, nil
 	})
 
 	srv.Handle(ipc.MethodCaptureVerificationPlan, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
@@ -1456,6 +1474,13 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		}
 		return cfg.ResolvePiProfile(&request)
 	})
+	srv.Handle(ipc.MethodResolveReviewerProfile, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
+		var request ipc.ResolveReviewerProfileParams
+		if err := json.Unmarshal(params, &request); err != nil {
+			return nil, fmt.Errorf("invalid reviewer selection")
+		}
+		return mgr.resolveReviewerProfile(ctx, request.RepoID, request.ReviewerProfile)
+	})
 
 	srv.Handle(ipc.MethodStartFreshRun, func(ctx context.Context, params json.RawMessage) (interface{}, error) {
 		if err := refuseNested(ctx, false); err != nil {
@@ -1480,7 +1505,7 @@ func registerHandlers(srv *ipc.Server, mgr *RunManager, d *db.DB, shutdown func(
 		if err := json.Unmarshal(params, &p); err != nil {
 			return nil, fmt.Errorf("invalid params: %w", err)
 		}
-		runID, err := mgr.HandleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.PiProfile)
+		runID, err := mgr.handleRerun(ctx, p.RepoID, p.Branch, p.PreviousRunID, p.SkipSteps, p.Intent, p.PRBaseBranch, p.OmitIntent, p.CallerHeadSHA, p.VerificationPlanID, p.ClosingIssueRefs, db.RunPRText{Title: p.PRTitle, Body: p.PRBody}, p.FreshLaunch, p.TranscriptHomes, p.PiProfile, p.ReviewerProfile)
 		if err != nil {
 			return nil, err
 		}
@@ -1678,6 +1703,7 @@ func runToInfo(d *db.DB, r *db.Run, steps []*db.StepResult) *ipc.RunInfo {
 		OmitIntent:         r.OmitIntent,
 		QuotaRouting:       r.QuotaRouting,
 		PiProfile:          r.PiProfile,
+		ReviewerProfile:    r.ReviewerProfile,
 		VerificationPlan:   r.VerificationPlan,
 		AwaitingAgent:      r.AwaitingAgentSince != nil,
 		AwaitingAgentSince: r.AwaitingAgentSince,

@@ -59,6 +59,7 @@ func newDeltaCase(t *testing.T, draw func(sctx *pipeline.StepContext, dir string
 	c := &deltaCase{baseSHA: baseSHA, emptyDir: t.TempDir()}
 	c.agent = &mockAgent{name: "test"}
 	c.sctx = newTestContextWithDBRecords(t, c.agent, dir, baseSHA, headSHA, config.Commands{})
+	recordPRTestPush(t, c.sctx)
 	enableDefaultEvidence(c.sctx)
 	c.agent.runFn = func(ctx context.Context, opts agent.RunOpts) (*agent.Result, error) {
 		if opts.Purpose != "architecture-delta" {
