@@ -13,6 +13,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"testing"
 	"time"
 
@@ -417,9 +418,22 @@ func LinkFakeCLI(t *testing.T, binDir, name string) {
 		if readErr != nil {
 			t.Fatal(readErr)
 		}
-		if err := os.WriteFile(dst, data, 0o755); err != nil {
-			t.Fatal(err)
-		}
+		WriteExecutable(t, dst, data)
+	}
+}
+
+// WriteExecutable writes a fake executable that a parallel test can run at
+// once. A fork inherits every descriptor open at that moment, so a sibling
+// test's fork during a plain write keeps this file open for writing until that
+// child execs, and an exec of it in that window fails with ETXTBSY on Linux
+// (golang/go#22315). Holding ForkLock for reading keeps forks out of the write.
+func WriteExecutable(t *testing.T, path string, content []byte) {
+	t.Helper()
+	syscall.ForkLock.RLock()
+	err := os.WriteFile(path, content, 0o755)
+	syscall.ForkLock.RUnlock()
+	if err != nil {
+		t.Fatal(err)
 	}
 }
 

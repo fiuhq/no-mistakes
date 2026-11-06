@@ -16,6 +16,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/config"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
+	"github.com/kunchenguid/no-mistakes/internal/pipeline/steps/internal/stepstest"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
 )
 
@@ -230,9 +231,7 @@ func TestArchitectureDelta_RunsTheSkillsSelfCheck(t *testing.T) {
 			t.Parallel()
 			c := newDeltaCase(t, drawGood(t))
 			bin := t.TempDir()
-			if err := os.WriteFile(filepath.Join(bin, "python3"), []byte(tc.script), 0o755); err != nil {
-				t.Fatal(err)
-			}
+			stepstest.WriteExecutable(t, filepath.Join(bin, "python3"), []byte(tc.script))
 			c.sctx.Env = []string{"PATH=" + bin + ":/usr/bin:/bin"}
 			err := architectureDeltaDeps{}.runCheck(c.sctx, "/skill", "/run/delta.html")
 			if tc.wantErr == "" && err != nil {
