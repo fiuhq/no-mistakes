@@ -91,6 +91,58 @@ func TestScheduledRestartDoesNotWaitForAGreenCIMonitor(t *testing.T) {
 	}
 }
 
+// pollingCIStep stops as the CI monitor does when a shutdown lands during a live
+// poll: the read fails, the monitor withdraws readiness, the step returns.
+type pollingCIStep struct {
+	heldStep
+}
+
+func (s *pollingCIStep) Execute(sctx *pipeline.StepContext) (*pipeline.StepOutcome, error) {
+	s.once.Do(func() { close(s.started) })
+	<-sctx.Ctx.Done()
+	if err := sctx.SetCIReadiness(false, false); err != nil {
+		return nil, err
+	}
+	return nil, sctx.Ctx.Err()
+}
+
+func TestAShutdownDuringAPollKeepsTheGreenVerdict(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "stop-during-poll")
+	step := &pollingCIStep{heldStep{name: types.StepCI, started: make(chan struct{})}}
+	first := make(chan error, 1)
+	go func() {
+		first <- RunWithOptions(p, d, func() []pipeline.Step { return []pipeline.Step{step} })
+	}()
+	waitForDaemonReady(t, p)
+	runID := submitBranchRun(t, p, p.RepoDir(repo.ID), "feature-a", headSHA)
+	<-step.started
+	if err := d.UpdateRunPRURL(runID, "https://github.com/o/r/pull/1"); err != nil {
+		t.Fatal(err)
+	}
+	if err := d.SetRunCIReady(runID, true); err != nil {
+		t.Fatal(err)
+	}
+	if err := Stop(p); err != nil {
+		t.Fatalf("stop daemon: %v", err)
+	}
+	select {
+	case <-first:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the daemon did not stop")
+	}
+	if _, err := d.RecoverStaleRuns("daemon crashed during execution"); err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.GetRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != types.RunCIMonitorInterrupted {
+		t.Fatalf("green monitor stopped during a poll = %s, want %s", run.Status, types.RunCIMonitorInterrupted)
+	}
+}
+
 func TestACleanStopStillFailsACIStepWithNoVerdict(t *testing.T) {
 	p, d := newParkedRunEnv(t)
 	repo, headSHA := setupTestGitRepo(t, p, d, "stop-ci-pending")

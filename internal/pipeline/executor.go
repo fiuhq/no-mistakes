@@ -1528,6 +1528,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		sctx.HandoffPending = func() bool { return e.handoffPending(run.ID) }
 	}
 	sctx.SetCIReadiness = func(ready, declaredNoCI bool) error {
+		if !ready && shutdownCancelled(ctx) {
+			return nil
+		}
 		declaredNoCI = ready && declaredNoCI
 		persist := func() error {
 			if err := e.db.SetRunCIReadyWithReason(run.ID, ready, declaredNoCI); err != nil {
