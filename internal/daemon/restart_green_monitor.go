@@ -10,8 +10,9 @@ import (
 // checks-passed readiness recorded, the state `axi handoff` accepts. A monitor
 // like that can last days, so counting it as executing would hold a scheduled
 // restart, and with it every new push, until someone merges. A restart here is
-// safe: recovery records ci_monitor_interrupted and the PR stays open. A CI step
-// with no readiness, or a run back in any other step, is still working.
+// safe: the executor leaves the run active at shutdown, recovery records it as
+// ci_monitor_interrupted, and the PR stays open. A CI step with no readiness, or
+// a run back in any other step, is still working.
 func waitingOnHumanMerge(run *db.Run, steps []*db.StepResult) bool {
 	if run == nil || run.Status != types.RunRunning || run.CIReadyAt == nil || run.PRURL == nil || *run.PRURL == "" {
 		return false

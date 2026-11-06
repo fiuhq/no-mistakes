@@ -79,6 +79,44 @@ func TestScheduledRestartDoesNotWaitForAGreenCIMonitor(t *testing.T) {
 	case <-time.After(30 * time.Second):
 		t.Fatal("a green CI monitor held the restart up")
 	}
+	if _, err := d.RecoverStaleRuns("daemon crashed during execution"); err != nil {
+		t.Fatal(err)
+	}
+	run, err := d.GetRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != types.RunCIMonitorInterrupted {
+		t.Fatalf("green monitor after the restart = %s, want %s: nothing failed, the PR is open and green", run.Status, types.RunCIMonitorInterrupted)
+	}
+}
+
+func TestACleanStopStillFailsACIStepWithNoVerdict(t *testing.T) {
+	p, d := newParkedRunEnv(t)
+	repo, headSHA := setupTestGitRepo(t, p, d, "stop-ci-pending")
+	step := &heldStep{name: types.StepCI, started: make(chan struct{}), released: make(chan struct{})}
+	first := make(chan error, 1)
+	go func() {
+		first <- RunWithOptions(p, d, func() []pipeline.Step { return []pipeline.Step{step} })
+	}()
+	waitForDaemonReady(t, p)
+	runID := submitBranchRun(t, p, p.RepoDir(repo.ID), "feature-a", headSHA)
+	<-step.started
+	if err := Stop(p); err != nil {
+		t.Fatalf("stop daemon: %v", err)
+	}
+	select {
+	case <-first:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the daemon did not stop")
+	}
+	run, err := d.GetRun(runID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if run.Status != types.RunFailed {
+		t.Fatalf("a CI step with no verdict after a clean stop = %s, want failed", run.Status)
+	}
 }
 
 func TestScheduledRestartWaitsForACIStepWithNoVerdict(t *testing.T) {

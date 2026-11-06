@@ -1638,6 +1638,9 @@ rounds:
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusCompleted), "", "", &durationMS)
 				return false, "", ErrHandoff
 			}
+			if stepName == types.StepCI && e.greenMonitorStoppedByShutdown(ctx, run.ID) {
+				return false, "", ErrParkedAtShutdown
+			}
 			// Persist the failure reason to the step's own log file. The error
 			// often carries the only detail of why the step failed (e.g. git
 			// stderr from a rejected push); without this the step log shows the
