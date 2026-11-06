@@ -364,7 +364,8 @@ type ScheduleRestartParams struct{}
 
 // RestartStatusResult reports a restart scheduled by schedule_restart.
 // WaitingRuns counts runs still executing or queued to execute; runs parked at
-// an approval gate are not counted, because a clean restart keeps them.
+// an approval gate are not counted, because a clean restart keeps them, and
+// neither are runs only monitoring a green PR until a person merges it.
 // HeldPushes counts pushes received while waiting, which the restarted daemon
 // starts on the new version.
 type RestartStatusResult struct {

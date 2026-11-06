@@ -171,33 +171,49 @@ func TestACleanStopStillFailsACIStepWithNoVerdict(t *testing.T) {
 	}
 }
 
-func TestScheduledRestartWaitsForACIStepWithNoVerdict(t *testing.T) {
-	p, d := newParkedRunEnv(t)
-	repo, headSHA := setupTestGitRepo(t, p, d, "restart-ci-pending")
-	released := make(chan struct{})
-	step := &heldStep{name: types.StepCI, started: make(chan struct{}), released: released}
-	first := make(chan error, 1)
-	go func() {
-		first <- RunWithOptions(p, d, func() []pipeline.Step { return []pipeline.Step{step} })
-	}()
-	waitForDaemonReady(t, p)
-	submitBranchRun(t, p, p.RepoDir(repo.ID), "feature-a", headSHA)
-	<-step.started
+func TestScheduledRestartWaitsForARunStillWorking(t *testing.T) {
+	for name, tc := range map[string]struct {
+		step  types.StepName
+		ready bool
+	}{
+		"CI step with no verdict":              {types.StepCI, false},
+		"back in review after a green verdict": {types.StepReview, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			p, d := newParkedRunEnv(t)
+			repo, headSHA := setupTestGitRepo(t, p, d, "restart-still-working")
+			released := make(chan struct{})
+			step := &heldStep{name: tc.step, started: make(chan struct{}), released: released}
+			first := make(chan error, 1)
+			go func() {
+				first <- RunWithOptions(p, d, func() []pipeline.Step { return []pipeline.Step{step} })
+			}()
+			waitForDaemonReady(t, p)
+			runID := submitBranchRun(t, p, p.RepoDir(repo.ID), "feature-a", headSHA)
+			<-step.started
+			if err := d.UpdateRunPRURL(runID, "https://github.com/o/r/pull/1"); err != nil {
+				t.Fatal(err)
+			}
+			if err := d.SetRunCIReady(runID, tc.ready); err != nil {
+				t.Fatal(err)
+			}
 
-	var scheduled ipc.RestartStatusResult
-	if err := callDaemon(p, ipc.MethodScheduleRestart, &ipc.ScheduleRestartParams{}, &scheduled); err != nil {
-		t.Fatalf("schedule restart: %v", err)
-	}
-	if scheduled.WaitingRuns != 1 {
-		t.Fatalf("scheduled restart waits for %d runs, want the CI step still working", scheduled.WaitingRuns)
-	}
-	close(released)
-	select {
-	case err := <-first:
-		if !errors.Is(err, ErrRestartForUpdate) {
-			t.Fatalf("daemon stopped with %v, want ErrRestartForUpdate", err)
-		}
-	case <-time.After(30 * time.Second):
-		t.Fatal("the restart never came after the CI step finished")
+			var scheduled ipc.RestartStatusResult
+			if err := callDaemon(p, ipc.MethodScheduleRestart, &ipc.ScheduleRestartParams{}, &scheduled); err != nil {
+				t.Fatalf("schedule restart: %v", err)
+			}
+			if scheduled.WaitingRuns != 1 {
+				t.Fatalf("scheduled restart waits for %d runs, want the working run", scheduled.WaitingRuns)
+			}
+			close(released)
+			select {
+			case err := <-first:
+				if !errors.Is(err, ErrRestartForUpdate) {
+					t.Fatalf("daemon stopped with %v, want ErrRestartForUpdate", err)
+				}
+			case <-time.After(30 * time.Second):
+				t.Fatal("the restart never came after the step finished")
+			}
+		})
 	}
 }
