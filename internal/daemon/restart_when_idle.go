@@ -171,7 +171,9 @@ func (m *RunManager) busyRunCount() int {
 	m.mu.Unlock()
 	for id, exec := range execs {
 		if !exec.AwaitingApproval() {
-			busy++
+			if !m.runWaitingOnHumanMerge(id) {
+				busy++
+			}
 			continue
 		}
 		run, err := m.db.GetRun(id)
