@@ -1528,6 +1528,9 @@ func (e *Executor) executeStep(ctx context.Context, step Step, sr *db.StepResult
 		sctx.HandoffPending = func() bool { return e.handoffPending(run.ID) }
 	}
 	sctx.SetCIReadiness = func(ready, declaredNoCI bool) error {
+		if !ready && shutdownCancelled(ctx) {
+			return nil
+		}
 		declaredNoCI = ready && declaredNoCI
 		persist := func() error {
 			if err := e.db.SetRunCIReadyWithReason(run.ID, ready, declaredNoCI); err != nil {
@@ -1637,6 +1640,9 @@ rounds:
 				}
 				e.emitStepEventWithFindingsAndError(ipc.EventStepCompleted, run, repo, stepName, string(types.StepStatusCompleted), "", "", &durationMS)
 				return false, "", ErrHandoff
+			}
+			if stepName == types.StepCI && e.greenMonitorStoppedByShutdown(ctx, run.ID) {
+				return false, "", ErrParkedAtShutdown
 			}
 			// Persist the failure reason to the step's own log file. The error
 			// often carries the only detail of why the step failed (e.g. git

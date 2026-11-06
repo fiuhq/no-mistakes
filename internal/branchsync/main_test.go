@@ -23,7 +23,10 @@ func TestMain(m *testing.M) {
 	// `git config` spawns per repository were ~8% of the package's git.exe
 	// spawns, which set its Windows wall time.
 	identity := "[core]\n\tautocrlf = false\n[user]\n\temail = test@example.com\n\tname = Test User\n"
-	if err := os.WriteFile(globalConfig, []byte(identity), 0o644); err != nil {
+	// A commit or push starts detached auto-maintenance, whose short-lived
+	// objects/maintenance.lock vanishes under copyGitFixture's os.CopyFS.
+	maintenance := "[maintenance]\n\tauto = false\n"
+	if err := os.WriteFile(globalConfig, []byte(identity+maintenance), 0o644); err != nil {
 		panic(err)
 	}
 	os.Setenv("GIT_CONFIG_GLOBAL", globalConfig)

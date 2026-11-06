@@ -24,8 +24,9 @@ var ErrDaemonShutdown = errors.New("daemon shutting down")
 var ErrHandoff = errors.New("green PR handed off for human review")
 
 // ErrParkedAtShutdown is returned when a daemon shutdown reached a run that was
-// fully recorded as waiting at an approval gate. The run keeps that record so
-// the next start resumes it, as it would after a crash.
+// fully recorded as waiting at an approval gate, or a green CI monitor. The run
+// keeps its record: the next start resumes the gate, as it would after a crash,
+// and records the monitor as ci_monitor_interrupted.
 var ErrParkedAtShutdown = errors.New("run left parked at an approval gate by daemon shutdown")
 
 // StepContext provides shared resources to pipeline steps during execution.
