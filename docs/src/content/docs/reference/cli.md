@@ -255,6 +255,7 @@ Without `--yes`, an agent driving `axi run` should stop when a gate contains `ac
 Review gates include a `note` field reminding agents that `auto_fix.review` defaults to `0`, so blocking and ask-user review findings park for a decision unless configuration explicitly opts back into review auto-fix.
 Long-running `axi run` calls are working, not stalled; if one returns a `gate:`, read that output and answer it with `axi respond`.
 `--wait` defaults to 8m so an agent harness with a 10-minute tool cap gets a structured error instead of an unbounded hang. It bounds the active-run lookup, event-subscription acknowledgement, and subsequent run driving. Elapsed wait is not a pipeline failure and does not mean the daemon is dead: run `no-mistakes axi status` and reattach with `axi run`. A live daemon that is slow to answer a pre-drive `get_active_run` or `get_run` state read is retried after a health probe rather than reported as an I/O failure or mistaken for an absent run.
+The elapsed-wait reattach hint preserves any non-default `--wait` duration, including after an accepted `axi respond` or `axi answer`: `--wait 6h` produces `no-mistakes axi run --wait 6h0m0s`, keeping the next hold at six hours without resubmitting the response or answer.
 Backgrounding a call is fine for an agent harness, but the run never advances past a gate on its own.
 When CI readiness is established - every registered check is green, or the trusted default-branch config declares [`no_ci: true`](/no-mistakes/reference/repo-config/#no_ci) with no registered checks - and known mergeability is clear, `axi run` exits successfully with `outcome: checks-passed` instead of waiting for a human merge. A generic empty check list without that declaration is not ready.
 Treat that outcome as the agent stopping point: ask the user to review and merge the PR from the `help` line, or run [`axi handoff`](#no-mistakes-axi-handoff) to end green monitoring without cancelling the run.
@@ -411,6 +412,8 @@ Answering requires an active run, because only its executor can resume the revie
 
 ## no-mistakes axi status
 
+Status and [`axi logs`](#no-mistakes-axi-logs) open the existing database read-only, without creating state directories or running schema migrations. They can read committed run and step state while another connection holds a SQLite WAL write transaction. Missing additive run columns use their pre-migration defaults. A missing, empty, or corrupt database returns a read error instead of a no-run result. Cached `branch_sync` annotations also use a read-only connection.
+
 Without `--run` or `--branch`, show the current branch's run: its active run, else its most recent one.
 Resolution is scoped to the current branch and never falls back to another branch's run, because one clone commonly has several worktrees on different branches.
 On a successful status response, when the current branch has no run of its own - including a detached `HEAD`, which owns no branch and so reports `current_branch: unknown` - the output carries no run object at all.
@@ -556,7 +559,7 @@ On a `user_owned` branch, `--recover` is an idempotent no-op success: nothing pi
 
 ## no-mistakes axi logs
 
-Show one pipeline step's recorded findings and log output.
+Show one pipeline step's recorded findings and log output, using the [read-only database access described for status](#no-mistakes-axi-status).
 
 ```sh
 no-mistakes axi logs --step review
@@ -877,6 +880,78 @@ Shows runs newest-first with branch, status (styled), short SHA, timestamp, and 
 Inspect the locally collected review-case corpus before spending tokens, replay an explicit agent and model with isolated no-mistakes state and a throwaway worktree, and report finding-level scores, token cost, wall time, and the recall-versus-cost frontier. Eligible cases are collected automatically as runs finish; `eval capture <run-id>` collects one on demand; `eval miss ingest <run-id> --finding '<json>'` labels a confirmed post-PR miss (review passed green, later caught) as false-negative gold.
 
 See [Evaluation toolkit](/no-mistakes/reference/eval/) for the local-only boundary, collection and retention, command flags, label policy, and reporting semantics.
+
+## no-mistakes export
+
+Export one run's stored delivery facts on demand, without a daemon or a Git checkout:
+
+```sh
+no-mistakes export --run <id> --json
+```
+
+Both flags are required. The command reads the existing `NM_HOME` database in a
+single read-only snapshot. It never creates a database, migrates its schema, runs agents,
+queries a forge, or sends telemetry. A missing run, damaged database, or schema
+missing required columns returns a nonzero exit status and no JSON document.
+SQLite may create its normal `-wal` and `-shm` sidecars while reading a WAL database.
+
+The JSON document has `schema_version: 1` and these fields:
+
+| Field | Stored facts |
+| ----- | ------------ |
+| `run` | `id`, `repo_id`, `branch`, `head_sha`, `base_sha`, `submitted_head_sha`, `pr_url`, `status`, `created_at`, `updated_at`, `parked_ms`, `awaiting_agent_since`, `ci_ready_at` |
+| `steps[]` | `id`, `name`, `order`, `status`, `exit_code`, `started_at`, `completed_at`, `duration_ms`, `response_origin`, `ci_attempt`, `carried_from`, `rounds[]` |
+| `steps[].rounds[]` | `id`, `round`, `trigger`, `created_at`, `duration_ms`, `reviewed_head_sha`, `selection_source`, `selected_finding_ids`, `response_origin`, `repair_published`, `gate` |
+| `invocations[]` | `id`, `step_name`, `round`, `purpose`, `agent`, `model`, `model_provider`, `session_mode`, `started_at`, `completed_at`, `duration_ms`, `subprocess_wait_ms`, `exit_status`, `failure_category`, `input_tokens`, `output_tokens`, `cache_read_tokens`, `cache_creation_tokens`, `fresh_input_tokens`, `reasoning_tokens`, `delta_input_tokens`, `delta_output_tokens`, `delta_cache_read_tokens` |
+
+`repo_id` is the exact local repository record's ID. Repository URLs and filesystem
+paths are excluded. Steps belong to the enclosing run, rounds to the enclosing
+step, and invocations bind to that run through their stored `step_name` and `round`.
+Steps are ordered by stored order then ID, rounds by round number then ID, and
+invocations by start time then ID. Empty collections are `[]`.
+
+A reused step has `carried_from: {"run_id": "<source-run-id>", "step_id": "<source-step-id>"}`.
+Its completed or skipped status and timing fields describe work performed in that
+source run. Rounds and agent invocations remain scoped to the requested run, so
+export the source with `no-mistakes export --run <source-run-id> --json` and locate
+`<source-step-id>` to inspect the reused work's rounds and calls. The link uses the
+stored source step reference, including the original source retained by repeated
+retries. `carried_from` is `null` when no source reference was stored. If the
+referenced row is unavailable, its `run_id` is `null` and the known `step_id` remains.
+
+Timestamps are Unix seconds. Durations are stored milliseconds, never recomputed
+from timestamps. Missing nullable facts are JSON `null`, including unreported
+token counts for error or cancelled invocations. All invocation outcomes are
+included. The raw token counters and per-round `delta_*` counters are distinct,
+because resumed sessions can report cumulative usage.
+Empty stored model names, failure categories and unrecorded selections are `null`.
+
+Each round's `gate` object contains `first_parked_at`, `reason`, `owner`,
+`notified_at`, `escalated_at`, `responded_at`, `responder_identity`, `action`, and
+`resolution_evidence`. All are currently `null`: the database has no durable
+per-gate history for these facts. The object does not assert that the round
+parked. Round creation is not a park or response timestamp. The run's
+`awaiting_agent_since` is only its current park stamp, and `parked_ms` is an
+aggregate across waits. Neither reconstructs earlier gates.
+
+`response_origin` records `interactive`, `auto_yes`, or `unknown` as stored. It
+does not identify a person. `selection_source` is separate and can be `user`,
+`user_declined`, `auto_fix`, or `null`. `user_declined` does not prove human action
+or distinguish approve, skip and abort. `selected_finding_ids: []` records an
+explicit empty selection, while `null` means no stored selection.
+
+The `ci` step and its repair rounds describe no-mistakes monitoring, repair and
+wait work. `repair_published` records publication of a local repair round.
+`ci_attempt` is currently `null`: no authoritative hosted-job attempt ID is stored
+on a step. Local round numbers are not GitHub attempt numbers. Hosted job queue
+and execution times are unavailable and are not inferred from local durations.
+
+The export uses an explicit field list. Prompts, findings prose, config snapshots,
+session identities, intent, logs, raw terminal text, errors and private paths are
+excluded. There is no option to include those payloads. Output stays local unless
+you explicitly share it. Repeating an export of unchanged storage produces the
+same document. Consumers must tolerate additive fields and new source/origin
+values. Incompatible shape or unit changes require a new `schema_version`.
 
 ## no-mistakes stats
 
