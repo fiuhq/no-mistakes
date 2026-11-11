@@ -158,6 +158,7 @@ class Service {
     const paseo = this.paseo;
     const workspaces = this.workspaces;
     if (!paseo || !workspaces) return; // nothing is recorded, so the change is announced once an API arrives
+    const startedAt = Date.now();
     const seen = readSeen();
     const next: Record<string, Seen> = {};
     const changed: { run: Omit<RunView, "workspaceIds">; rows: ReturnType<typeof announce>["rows"] }[] = [];
@@ -171,8 +172,8 @@ class Service {
     const repoPaths = [...new Set(changed.map(({ run }) => run.repoPath))];
     const worktrees = new Map(await Promise.all(repoPaths.map(async (repoPath) => [repoPath, await worktreesOf(repoPath)] as const)));
     const workspaceIdsOf = (run: Omit<RunView, "workspaceIds">) => workspacesFor(run, worktrees.get(run.repoPath)!, byDir);
-    // A run in a workspace made since the list was read matches nothing in it: read the list again once.
-    if (changed.some(({ run }) => workspaceIdsOf(run).length === 0)) byDir = await workspaces.get(true);
+    // A run in a workspace made since the list was read matches nothing in it: read the list again once, unless it was read during this publish.
+    if (changed.some(({ run }) => workspaceIdsOf(run).length === 0)) byDir = await workspaces.get(startedAt);
     for (const { run, rows } of changed) {
       const agentId = await agentFor(paseo, workspaceIdsOf(run));
       if (!agentId) continue;

@@ -14,12 +14,44 @@ describe("Reused", () => {
     expect(reads).toBe(2);
   });
 
-  test("reads again on request inside the window", async () => {
+  test("reads again when the last read started before `since`, and reuses one that started at or after it", async () => {
+    let now = 0;
     let reads = 0;
-    const reused = new Reused(async () => ++reads, 15_000, () => 0);
+    const reused = new Reused(async () => ++reads, 15_000, () => now);
     await reused.get();
-    expect(await reused.get(true)).toBe(2);
+    now = 10;
+    expect(await reused.get(5)).toBe(2);
+    expect(await reused.get(10)).toBe(2);
     expect(await reused.get()).toBe(2);
+    expect(reads).toBe(2);
+  });
+
+  test("shares a read still running past the window and counts the window from when it settled", async () => {
+    let now = 0;
+    let reads = 0;
+    let finish: (() => void) | null = null;
+    const reused = new Reused(
+      () =>
+        new Promise<number>((resolve) => {
+          const n = ++reads;
+          finish = () => resolve(n);
+        }),
+      15_000,
+      () => now,
+    );
+    const first = reused.get();
+    now = 20_000;
+    const second = reused.get();
+    expect(reads).toBe(1);
+    finish!();
+    expect(await Promise.all([first, second])).toEqual([1, 1]);
+    now = 34_999;
+    expect(await reused.get()).toBe(1);
+    expect(reads).toBe(1);
+    now = 35_000;
+    const third = reused.get();
+    finish!();
+    expect(await third).toBe(2);
   });
 
   test("drops a failed read so the next caller tries again", async () => {
