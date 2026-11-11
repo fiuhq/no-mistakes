@@ -9,6 +9,7 @@ import os from "node:os";
 import path from "node:path";
 import { announce, ROW_KIND, ROW_VERSION, type RunView, type Seen, type StateView } from "../shared/model";
 import { nmHome, readRuns, statePath, withState } from "./db";
+import { Reused } from "./reused";
 import { canonical, workspacesFor, worktreesOf } from "./worktrees";
 
 /** The host supplies only `@getpaseo/plugin*` to a plugin installed from Git, so the API type comes from there. */
@@ -20,6 +21,11 @@ const WINDOW_SECONDS = 7 * 24 * 60 * 60;
 const SETTLE_MS = 1500;
 /** How long one checkout's worktree list is reused. */
 const WORKTREES_TTL_MS = 5000;
+/**
+ * How long the workspace list is reused. Each listing makes the Paseo daemon read every workspace's state, and
+ * every open client asks for the run state every few seconds, so a listing per ask kept a busy host's daemon queued.
+ */
+const WORKSPACES_TTL_MS = 15_000;
 
 function log(message: string, error?: unknown): void {
   console.error(`[no-mistakes] ${message}${error === undefined ? "" : `: ${error instanceof Error ? error.message : String(error)}`}`);
@@ -77,12 +83,12 @@ function readWindow(now: number): Omit<RunView, "workspaceIds">[] {
   return withState(statePath(), (db) => readRuns(db, Math.floor(now / 1000) - WINDOW_SECONDS));
 }
 
-async function readState(paseo: PaseoApi | null): Promise<StateView> {
+async function readState(workspaces: Reused<Map<string, string[]>> | null): Promise<StateView> {
   const readAt = Date.now();
   try {
     const runs = readWindow(readAt);
-    if (!paseo) return { runs: runs.map((run) => ({ ...run, workspaceIds: [] })), readAt, problem: null };
-    const byDir = await workspacesByDir(paseo);
+    if (!workspaces) return { runs: runs.map((run) => ({ ...run, workspaceIds: [] })), readAt, problem: null };
+    const byDir = await workspaces.get();
     const repoPaths = [...new Set(runs.map((run) => run.repoPath))];
     const worktrees = new Map(await Promise.all(repoPaths.map(async (repoPath) => [repoPath, await cachedWorktrees(repoPath, readAt)] as const)));
     return { runs: runs.map((run) => ({ ...run, workspaceIds: workspacesFor(run, worktrees.get(run.repoPath)!, byDir) })), readAt, problem: null };
@@ -105,6 +111,7 @@ async function agentFor(paseo: PaseoApi, workspaceIds: readonly string[]): Promi
 
 class Service {
   private paseo: PaseoApi | null = null;
+  private workspaces: Reused<Map<string, string[]>> | null = null;
   private watcher: fs.FSWatcher | null = null;
   private timer: NodeJS.Timeout | null = null;
   private running: Promise<void> = Promise.resolve();
@@ -124,12 +131,13 @@ class Service {
   capture(paseo: PaseoApi): void {
     if (this.paseo) return;
     this.paseo = paseo;
+    this.workspaces = new Reused(() => workspacesByDir(paseo), WORKSPACES_TTL_MS);
     this.schedule();
   }
 
   state(paseo: PaseoApi): Promise<StateView> {
     this.capture(paseo);
-    return readState(paseo);
+    return readState(this.workspaces);
   }
 
   /** At most one read per SETTLE_MS however long the daemon keeps writing; a later write rides the pending read. */
@@ -148,7 +156,8 @@ class Service {
    */
   private async publish(): Promise<void> {
     const paseo = this.paseo;
-    if (!paseo) return; // nothing is recorded, so the change is announced once an API arrives
+    const workspaces = this.workspaces;
+    if (!paseo || !workspaces) return; // nothing is recorded, so the change is announced once an API arrives
     const seen = readSeen();
     const next: Record<string, Seen> = {};
     const changed: { run: Omit<RunView, "workspaceIds">; rows: ReturnType<typeof announce>["rows"] }[] = [];
@@ -158,11 +167,14 @@ class Service {
       // First start on this host: everything already there is the baseline, not news.
       if (seen && rows.length > 0) changed.push({ run, rows });
     }
-    const byDir = changed.length > 0 ? await workspacesByDir(paseo) : new Map<string, string[]>();
+    let byDir = changed.length > 0 ? await workspaces.get() : new Map<string, string[]>();
     const repoPaths = [...new Set(changed.map(({ run }) => run.repoPath))];
     const worktrees = new Map(await Promise.all(repoPaths.map(async (repoPath) => [repoPath, await worktreesOf(repoPath)] as const)));
+    const workspaceIdsOf = (run: Omit<RunView, "workspaceIds">) => workspacesFor(run, worktrees.get(run.repoPath)!, byDir);
+    // A run in a workspace made since the list was read matches nothing in it: read the list again once.
+    if (changed.some(({ run }) => workspaceIdsOf(run).length === 0)) byDir = await workspaces.get(true);
     for (const { run, rows } of changed) {
-      const agentId = await agentFor(paseo, workspacesFor(run, worktrees.get(run.repoPath)!, byDir));
+      const agentId = await agentFor(paseo, workspaceIdsOf(run));
       if (!agentId) continue;
       for (const { id, row } of rows) {
         try {
@@ -180,6 +192,7 @@ class Service {
     if (this.timer) clearTimeout(this.timer);
     this.timer = null;
     this.paseo = null;
+    this.workspaces = null;
     if (instance === this) instance = null;
   }
 }
