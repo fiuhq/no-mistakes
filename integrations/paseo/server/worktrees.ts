@@ -37,8 +37,8 @@ function gitDirOf(dir: string): string | null {
 function isBare(config: string | null): boolean {
   let section = "";
   for (const line of config?.split("\n") ?? []) {
-    const header = /^\s*\[\s*([^\]\s]+)/.exec(line);
-    if (header) section = header[1].toLowerCase();
+    const header = /^\s*\[\s*([^\]\s]+)/.exec(line)?.[1];
+    if (header !== undefined) section = header.toLowerCase();
     else if (section === "core" && /^\s*bare\s*=\s*true\s*$/i.test(line)) return true;
   }
   return false;
