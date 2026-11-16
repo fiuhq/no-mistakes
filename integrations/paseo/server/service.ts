@@ -10,7 +10,7 @@ import path from "node:path";
 import { announce, ROW_KIND, ROW_VERSION, type RunView, type Seen, type StateView } from "../shared/model";
 import { nmHome, readRuns, statePath, withState } from "./db";
 import { Reused } from "./reused";
-import { canonical, workspacesFor, worktreesOf } from "./worktrees";
+import { canonical, repoOf, workspacesFor, worktreesOf } from "./worktrees";
 
 /** The host supplies only `@getpaseo/plugin*` to a plugin installed from Git, so the API type comes from there. */
 type PaseoApi = PluginHookContext["paseo"];
@@ -68,14 +68,18 @@ async function workspacesByDir(paseo: PaseoApi): Promise<Map<string, string[]>> 
   return byDir;
 }
 
-// ponytail: each checkout's worktrees are up to 5s stale so the 3s client poll does not run git per read; a new worktree's run shows on its workspace after that.
+// ponytail: each repository's worktrees are up to 5s stale so the 3s client poll does not run git per read; a new worktree's run shows on its workspace after that.
+// Keyed by repository, not checkout: a week of runs spans every worktree of one repository, and each listing answers for all of them.
 const worktreeCache = new Map<string, { at: number; worktrees: Promise<Map<string, string>> }>();
+const NONE: Promise<Map<string, string>> = Promise.resolve(new Map());
 
 function cachedWorktrees(repoPath: string, now: number): Promise<Map<string, string>> {
-  const hit = worktreeCache.get(repoPath);
+  const repo = repoOf(repoPath);
+  if (repo === null) return NONE;
+  const hit = worktreeCache.get(repo);
   if (hit && now - hit.at < WORKTREES_TTL_MS) return hit.worktrees;
   const worktrees = worktreesOf(repoPath);
-  worktreeCache.set(repoPath, { at: now, worktrees });
+  worktreeCache.set(repo, { at: now, worktrees });
   return worktrees;
 }
 
