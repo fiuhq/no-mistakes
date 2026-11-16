@@ -5,6 +5,7 @@
  */
 import { execFile } from "node:child_process";
 import fs from "node:fs";
+import path from "node:path";
 import { promisify } from "node:util";
 
 const execFileP = promisify(execFile);
@@ -15,6 +16,29 @@ export function canonical(dir: string): string {
     return fs.realpathSync(dir);
   } catch {
     return dir;
+  }
+}
+
+/**
+ * The repository a checkout belongs to: its common git directory, read from disk without running git, so every
+ * worktree of one repository shares one `git worktree list`. A directory with no `.git` (a bare repository) is its
+ * own key. Null when the checkout is gone: git could not read it either, so it matches no workspace.
+ */
+export function repoOf(dir: string): string | null {
+  const dotGit = path.join(dir, ".git");
+  let stat: fs.Stats;
+  try {
+    stat = fs.statSync(dotGit);
+  } catch {
+    return fs.existsSync(dir) ? canonical(dir) : null;
+  }
+  if (stat.isDirectory()) return canonical(dotGit);
+  try {
+    const gitDir = path.resolve(dir, fs.readFileSync(dotGit, "utf8").replace(/^gitdir:\s*/, "").trim());
+    const common = path.join(gitDir, "commondir");
+    return canonical(fs.existsSync(common) ? path.resolve(gitDir, fs.readFileSync(common, "utf8").trim()) : gitDir);
+  } catch {
+    return canonical(dir);
   }
 }
 
