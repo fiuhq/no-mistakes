@@ -33,6 +33,17 @@ function gitDirOf(dir: string): string | null {
   return fs.existsSync(path.join(dir, "HEAD")) && fs.existsSync(path.join(dir, "objects")) ? dir : null;
 }
 
+/** Whether a git config sets `core.bare`, which makes git refuse a work tree there. */
+function isBare(config: string | null): boolean {
+  let section = "";
+  for (const line of config?.split("\n") ?? []) {
+    const header = /^\s*\[\s*([^\]\s]+)/.exec(line);
+    if (header) section = header[1].toLowerCase();
+    else if (section === "core" && /^\s*bare\s*=\s*true\s*$/i.test(line)) return true;
+  }
+  return false;
+}
+
 /**
  * The checkout at a directory: its repository (the common git directory every worktree of it shares) and the
  * branch checked out there (none when detached or bare). Null when the directory is gone or not a checkout.
@@ -42,20 +53,29 @@ export function checkoutOf(dir: string): { repo: string; branch: string | null }
   if (gitDir === null) return null;
   const common = read(path.join(gitDir, "commondir"));
   const repo = canonical(common === null ? gitDir : path.resolve(gitDir, common));
-  const bare = gitDir === dir;
+  const bare = gitDir === dir || isBare(read(path.join(gitDir, "config")));
   // ponytail: reads the files git's default backend writes; a reftable repository shows no branch until this reads its tables.
   const head = bare ? null : read(path.join(gitDir, "HEAD"));
   return { repo, branch: head?.startsWith("ref: refs/heads/") ? head.slice("ref: refs/heads/".length) : null };
 }
 
-/** `workspaceDirs` is keyed by canonical directory. */
-export function workspacesFor(run: { repoPath: string; branch: string }, workspaceDirs: Map<string, string[]>): string[] {
-  const repo = checkoutOf(run.repoPath)?.repo;
-  if (repo === undefined) return [];
-  const ids: string[] = [];
+/**
+ * The workspaces of each run, from one read of every workspace directory and one per distinct run checkout.
+ * `workspaceDirs` is keyed by canonical directory.
+ */
+export function workspaceIndex(workspaceDirs: Map<string, string[]>): (run: { repoPath: string; branch: string }) => string[] {
+  const byRepo = new Map<string, Map<string, string[]>>();
   for (const [dir, workspaceIds] of workspaceDirs) {
     const checkout = checkoutOf(dir);
-    if (checkout?.repo === repo && checkout.branch === run.branch) ids.push(...workspaceIds);
+    if (checkout?.branch == null) continue;
+    const branches = byRepo.get(checkout.repo) ?? new Map<string, string[]>();
+    branches.set(checkout.branch, [...(branches.get(checkout.branch) ?? []), ...workspaceIds]);
+    byRepo.set(checkout.repo, branches);
   }
-  return ids;
+  const repoOf = new Map<string, string | undefined>();
+  return (run) => {
+    if (!repoOf.has(run.repoPath)) repoOf.set(run.repoPath, checkoutOf(run.repoPath)?.repo);
+    const repo = repoOf.get(run.repoPath);
+    return (repo === undefined ? undefined : byRepo.get(repo)?.get(run.branch)) ?? [];
+  };
 }

@@ -10,7 +10,7 @@ import path from "node:path";
 import { announce, ROW_KIND, ROW_VERSION, type RunView, type Seen, type StateView } from "../shared/model";
 import { nmHome, readRuns, statePath, withState } from "./db";
 import { Reused } from "./reused";
-import { canonical, workspacesFor } from "./worktrees";
+import { canonical, workspaceIndex } from "./worktrees";
 
 /** The host supplies only `@getpaseo/plugin*` to a plugin installed from Git, so the API type comes from there. */
 type PaseoApi = PluginHookContext["paseo"];
@@ -75,8 +75,8 @@ async function readState(workspaces: Reused<Map<string, string[]>> | null): Prom
   try {
     const runs = readWindow(readAt);
     if (!workspaces) return { runs: runs.map((run) => ({ ...run, workspaceIds: [] })), readAt, problem: null };
-    const byDir = await workspaces.get();
-    return { runs: runs.map((run) => ({ ...run, workspaceIds: workspacesFor(run, byDir) })), readAt, problem: null };
+    const workspacesOf = workspaceIndex(await workspaces.get());
+    return { runs: runs.map((run) => ({ ...run, workspaceIds: workspacesOf(run) })), readAt, problem: null };
   } catch (error) {
     return { runs: [], readAt, problem: `could not read ${statePath()}: ${error instanceof Error ? error.message : String(error)}` };
   }
@@ -153,10 +153,9 @@ class Service {
       // First start on this host: everything already there is the baseline, not news.
       if (seen && rows.length > 0) changed.push({ run, rows });
     }
-    let byDir = changed.length > 0 ? await workspaces.get() : new Map<string, string[]>();
-    const workspaceIdsOf = (run: Omit<RunView, "workspaceIds">) => workspacesFor(run, byDir);
+    let workspaceIdsOf = workspaceIndex(changed.length > 0 ? await workspaces.get() : new Map<string, string[]>());
     // A run in a workspace made since the list was read matches nothing in it: read the list again once, unless it was read during this publish.
-    if (changed.some(({ run }) => workspaceIdsOf(run).length === 0)) byDir = await workspaces.get(startedAt);
+    if (changed.some(({ run }) => workspaceIdsOf(run).length === 0)) workspaceIdsOf = workspaceIndex(await workspaces.get(startedAt));
     for (const { run, rows } of changed) {
       const agentId = await agentFor(paseo, workspaceIdsOf(run));
       if (!agentId) continue;

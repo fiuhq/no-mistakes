@@ -3,7 +3,7 @@ import { execFileSync } from "node:child_process";
 import fs from "node:fs";
 import os from "node:os";
 import path from "node:path";
-import { canonical, checkoutOf, workspacesFor } from "./worktrees";
+import { canonical, checkoutOf, workspaceIndex } from "./worktrees";
 
 function git(cwd: string, ...args: string[]): void {
   execFileSync("git", ["-c", "user.name=t", "-c", "user.email=t@t", "-c", "init.defaultBranch=main", ...args], { cwd, stdio: "ignore" });
@@ -44,7 +44,7 @@ function countGitRuns<T>(fn: () => T): { result: T; runs: number } {
   }
 }
 
-describe("workspacesFor", () => {
+describe("workspaceIndex", () => {
   test("a standard repository: only the worktree on the run's branch matches, not the main root", () => {
     const repo = standardRepo("feat/a", "feat/b");
     const dirs = new Map([
@@ -52,8 +52,8 @@ describe("workspacesFor", () => {
       [repo.worktree("feat/a"), ["a-ws"]],
       [repo.worktree("feat/b"), ["b-ws"]],
     ]);
-    expect(workspacesFor({ repoPath: repo.root, branch: "feat/a" }, dirs)).toEqual(["a-ws"]);
-    expect(workspacesFor({ repoPath: repo.root, branch: "main" }, dirs)).toEqual(["main-ws"]);
+    expect(workspaceIndex(dirs)({ repoPath: repo.root, branch: "feat/a" })).toEqual(["a-ws"]);
+    expect(workspaceIndex(dirs)({ repoPath: repo.root, branch: "main" })).toEqual(["main-ws"]);
   });
 
   test("a bare layout, where the run's checkout is the worktree itself", () => {
@@ -68,16 +68,34 @@ describe("workspacesFor", () => {
       [path.join(root, "feat"), ["feat-ws"]],
       [bare, ["bare-ws"]],
     ]);
-    expect(workspacesFor({ repoPath: path.join(root, "feat"), branch: "feat/b" }, dirs)).toEqual(["feat-ws"]);
-    expect(workspacesFor({ repoPath: path.join(root, "main"), branch: "main" }, dirs)).toEqual(["main-ws"]);
+    expect(workspaceIndex(dirs)({ repoPath: path.join(root, "feat"), branch: "feat/b" })).toEqual(["feat-ws"]);
+    expect(workspaceIndex(dirs)({ repoPath: path.join(root, "main"), branch: "main" })).toEqual(["main-ws"]);
     expect(checkoutOf(bare)).toEqual({ repo: canonical(bare), branch: null });
+  });
+
+  test("a bare container whose .git points at .bare is not a checkout of the bare HEAD's branch", () => {
+    const source = standardRepo();
+    const root = tmp();
+    const bare = path.join(root, ".bare");
+    execFileSync("git", ["clone", "--bare", source.root, bare], { stdio: "ignore" });
+    fs.writeFileSync(path.join(root, ".git"), "gitdir: ./.bare\n");
+    git(root, "worktree", "add", path.join(root, "main"), "main");
+    git(root, "worktree", "add", "-b", "feat/b", path.join(root, "feat"));
+    const dirs = new Map([
+      [root, ["container-ws"]],
+      [path.join(root, "main"), ["main-ws"]],
+      [path.join(root, "feat"), ["feat-ws"]],
+    ]);
+    expect(checkoutOf(root)).toEqual({ repo: canonical(bare), branch: null });
+    expect(workspaceIndex(dirs)({ repoPath: path.join(root, "main"), branch: "main" })).toEqual(["main-ws"]);
+    expect(workspaceIndex(dirs)({ repoPath: path.join(root, "feat"), branch: "feat/b" })).toEqual(["feat-ws"]);
   });
 
   test("the same branch in another repository does not match", () => {
     const one = standardRepo("feat/a");
     const two = standardRepo("feat/a");
     const dirs = new Map([[two.worktree("feat/a"), ["other-ws"]]]);
-    expect(workspacesFor({ repoPath: one.root, branch: "feat/a" }, dirs)).toEqual([]);
+    expect(workspaceIndex(dirs)({ repoPath: one.root, branch: "feat/a" })).toEqual([]);
   });
 
   test("a detached worktree has no branch, so no run matches it", () => {
@@ -85,7 +103,7 @@ describe("workspacesFor", () => {
     const detached = path.join(path.dirname(repo.root), "detached");
     git(repo.root, "worktree", "add", "--detach", detached);
     expect(checkoutOf(detached)?.branch).toBeNull();
-    expect(workspacesFor({ repoPath: repo.root, branch: "HEAD" }, new Map([[detached, ["d-ws"]]]))).toEqual([]);
+    expect(workspaceIndex(new Map([[detached, ["d-ws"]]]))({ repoPath: repo.root, branch: "HEAD" })).toEqual([]);
   });
 
   test("a deleted checkout, a leftover folder and a broken .git match nothing", () => {
@@ -96,7 +114,7 @@ describe("workspacesFor", () => {
     fs.mkdirSync(path.join(broken, ".git"));
     for (const dir of [gone, leftover, broken]) {
       expect(checkoutOf(dir)).toBeNull();
-      expect(workspacesFor({ repoPath: dir, branch: "main" }, new Map([[dir, ["ws"]]]))).toEqual([]);
+      expect(workspaceIndex(new Map([[dir, ["ws"]]]))({ repoPath: dir, branch: "main" })).toEqual([]);
     }
   });
 
@@ -104,7 +122,7 @@ describe("workspacesFor", () => {
     const repo = standardRepo("feat/a");
     const alias = path.join(tmp(), "alias");
     fs.symlinkSync(repo.worktree("feat/a"), alias);
-    expect(workspacesFor({ repoPath: alias, branch: "feat/a" }, new Map([[canonical(repo.worktree("feat/a")), ["ws"]]]))).toEqual(["ws"]);
+    expect(workspaceIndex(new Map([[canonical(repo.worktree("feat/a")), ["ws"]]]))({ repoPath: alias, branch: "feat/a" })).toEqual(["ws"]);
   });
 
   test("matching runs no git, however many checkouts there are", () => {
@@ -116,7 +134,7 @@ describe("workspacesFor", () => {
       [repo.worktree("feat/b"), ["b-ws"]],
     ]);
     const { result, runs } = countGitRuns(() =>
-      [repo.root, repo.worktree("feat/b"), gone].map((repoPath) => workspacesFor({ repoPath, branch: "feat/a" }, dirs)),
+      [repo.root, repo.worktree("feat/b"), gone].map((repoPath) => workspaceIndex(dirs)({ repoPath, branch: "feat/a" })),
     );
     expect(result).toEqual([["a-ws"], ["a-ws"], []]);
     expect(runs).toBe(0);
