@@ -1,14 +1,11 @@
 /**
- * Which Paseo workspaces a run belongs to: the ones sitting in a worktree of the run's checkout that has the
+ * Which Paseo workspaces a run belongs to: the ones sitting in a worktree of the run's repository that has the
  * run's branch checked out. A standard repository records its main root as the run's checkout; a bare layout
- * records the worktree itself. `git worktree list` answers both the same way.
+ * records the worktree itself. Both are answered from the checkout's own `.git` files, never by running git:
+ * the client polls every few seconds and a week of runs spans dozens of checkouts.
  */
-import { execFile } from "node:child_process";
 import fs from "node:fs";
 import path from "node:path";
-import { promisify } from "node:util";
-
-const execFileP = promisify(execFile);
 
 /** One spelling per directory, so /var and /private/var (or any symlinked path) compare equal. */
 export function canonical(dir: string): string {
@@ -19,54 +16,46 @@ export function canonical(dir: string): string {
   }
 }
 
-/**
- * The repository a checkout belongs to: its common git directory, read from disk without running git, so every
- * worktree of one repository shares one `git worktree list`. A directory with no `.git` (a bare repository) is its
- * own key. Null when the checkout is gone: git could not read it either, so it matches no workspace.
- */
-export function repoOf(dir: string): string | null {
+function read(file: string): string | null {
+  try {
+    return fs.readFileSync(file, "utf8").trim();
+  } catch {
+    return null;
+  }
+}
+
+/** The git directory of a checkout or of a bare repository; null when the directory is not one. */
+function gitDirOf(dir: string): string | null {
   const dotGit = path.join(dir, ".git");
-  let stat: fs.Stats;
-  try {
-    stat = fs.statSync(dotGit);
-  } catch {
-    return fs.existsSync(dir) ? canonical(dir) : null;
-  }
-  if (stat.isDirectory()) return canonical(dotGit);
-  try {
-    const gitDir = path.resolve(dir, fs.readFileSync(dotGit, "utf8").replace(/^gitdir:\s*/, "").trim());
-    const common = path.join(gitDir, "commondir");
-    return canonical(fs.existsSync(common) ? path.resolve(gitDir, fs.readFileSync(common, "utf8").trim()) : gitDir);
-  } catch {
-    return canonical(dir);
-  }
+  const pointer = read(dotGit);
+  if (pointer !== null) return pointer.startsWith("gitdir:") ? path.resolve(dir, pointer.slice("gitdir:".length).trim()) : null;
+  if (fs.existsSync(path.join(dotGit, "HEAD"))) return dotGit;
+  return fs.existsSync(path.join(dir, "HEAD")) && fs.existsSync(path.join(dir, "objects")) ? dir : null;
 }
 
-/** Canonical worktree directory -> the branch checked out there. Bare and detached entries have no branch. */
-export function parseWorktrees(porcelain: string): Map<string, string> {
-  const worktrees = new Map<string, string>();
-  for (const entry of porcelain.split(/\n\s*\n/)) {
-    const lines = entry.split("\n");
-    const dir = lines.find((line) => line.startsWith("worktree "))?.slice("worktree ".length);
-    const branch = lines.find((line) => line.startsWith("branch refs/heads/"))?.slice("branch refs/heads/".length);
-    if (dir && branch) worktrees.set(canonical(dir), branch);
-  }
-  return worktrees;
-}
-
-/** The worktrees of a checkout; none when git cannot read it (a deleted checkout matches no workspace). */
-export async function worktreesOf(repoPath: string): Promise<Map<string, string>> {
-  try {
-    const { stdout } = await execFileP("git", ["-C", repoPath, "worktree", "list", "--porcelain"]);
-    return parseWorktrees(stdout);
-  } catch {
-    return new Map();
-  }
+/**
+ * The checkout at a directory: its repository (the common git directory every worktree of it shares) and the
+ * branch checked out there (none when detached or bare). Null when the directory is gone or not a checkout.
+ */
+export function checkoutOf(dir: string): { repo: string; branch: string | null } | null {
+  const gitDir = gitDirOf(dir);
+  if (gitDir === null) return null;
+  const common = read(path.join(gitDir, "commondir"));
+  const repo = canonical(common === null ? gitDir : path.resolve(gitDir, common));
+  const bare = gitDir === dir;
+  // ponytail: reads the files git's default backend writes; a reftable repository shows no branch until this reads its tables.
+  const head = bare ? null : read(path.join(gitDir, "HEAD"));
+  return { repo, branch: head?.startsWith("ref: refs/heads/") ? head.slice("ref: refs/heads/".length) : null };
 }
 
 /** `workspaceDirs` is keyed by canonical directory. */
-export function workspacesFor(run: { branch: string }, worktrees: Map<string, string>, workspaceDirs: Map<string, string[]>): string[] {
+export function workspacesFor(run: { repoPath: string; branch: string }, workspaceDirs: Map<string, string[]>): string[] {
+  const repo = checkoutOf(run.repoPath)?.repo;
+  if (repo === undefined) return [];
   const ids: string[] = [];
-  for (const [dir, workspaceIds] of workspaceDirs) if (worktrees.get(dir) === run.branch) ids.push(...workspaceIds);
+  for (const [dir, workspaceIds] of workspaceDirs) {
+    const checkout = checkoutOf(dir);
+    if (checkout?.repo === repo && checkout.branch === run.branch) ids.push(...workspaceIds);
+  }
   return ids;
 }
