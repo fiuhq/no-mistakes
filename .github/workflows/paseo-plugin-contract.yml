@@ -1,0 +1,44 @@
+name: Paseo plugin contract
+
+# The no-mistakes Paseo plugin lives in fiuhq/paseo (fiu-plugins/no-mistakes) and reads this daemon's database.
+# Its contract test builds that database from internal/db/schema.go, so a schema change here reruns it.
+on:
+  pull_request:
+    branches: [main]
+    paths:
+      - "internal/db/schema.go"
+      - ".github/workflows/paseo-plugin-contract.yml"
+  push:
+    branches: [main]
+    paths:
+      - "internal/db/schema.go"
+      - ".github/workflows/paseo-plugin-contract.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  contract:
+    # A pull request from a fork gets no secrets, so it cannot read the private plugin repository.
+    if: github.event_name != 'pull_request' || github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          path: no-mistakes
+      # PASEO_PLUGIN_DEPLOY_KEY is a read-only deploy key on fiuhq/paseo.
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
+        with:
+          repository: fiuhq/paseo
+          ssh-key: ${{ secrets.PASEO_PLUGIN_DEPLOY_KEY }}
+          path: paseo
+          sparse-checkout: fiu-plugins/no-mistakes
+      - uses: oven-sh/setup-bun@0c5077e51419868618aeaa5fe8019c62421857d6 # v2.2.0
+      - name: Run the plugin's schema contract test against this checkout
+        working-directory: paseo/fiu-plugins/no-mistakes
+        env:
+          NO_MISTAKES_SRC: ${{ github.workspace }}/no-mistakes
+        run: |
+          bun install --frozen-lockfile
+          bun test server/db.test.ts
