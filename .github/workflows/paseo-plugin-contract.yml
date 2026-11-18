@@ -13,8 +13,6 @@ on:
     paths:
       - "internal/db/schema.go"
       - ".github/workflows/paseo-plugin-contract.yml"
-  schedule:
-    - cron: "41 3 * * *"
   workflow_dispatch:
 
 permissions:
