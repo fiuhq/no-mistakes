@@ -333,8 +333,17 @@ func TestIntegrationRemoteSurvivesPrivateDaemonRestart(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer client.Close()
-	if err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: types.StepReview, Action: types.ActionApprove}, &ipc.RespondResult{}); err != nil {
-		t.Fatal(err)
+	// The recovered gate re-registers asynchronously after daemon ready.
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		err := client.Call(ipc.MethodRespond, &ipc.RespondParams{RunID: runID, Step: types.StepReview, Action: types.ActionApprove}, &ipc.RespondResult{})
+		if err == nil {
+			break
+		}
+		if !strings.Contains(err.Error(), "no step awaiting approval") || time.Now().After(deadline) {
+			t.Fatalf("recovered gate: %v", err)
+		}
+		time.Sleep(20 * time.Millisecond)
 	}
 	run := waitForRunTerminalState(t, database, runID)
 	if run.Status != types.RunCompleted || run.Integration == nil || run.Integration.URL != custom {
