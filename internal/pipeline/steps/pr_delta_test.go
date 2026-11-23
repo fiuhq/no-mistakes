@@ -290,7 +290,7 @@ func TestArchitectureDelta_RefusesEveryWayItCannotBeDrawn(t *testing.T) {
 		wantErr string
 	}{
 		{name: "no skill", draw: drawGood, setup: func(c *deltaCase) {
-			c.step.delta.skillDir = func() (string, error) { return architectureDeltaDeps{}.findSkillIn(t.TempDir()) }
+			c.step.delta.skillDir = func() (string, error) { return architectureDeltaDeps{}.findSkillIn(t.TempDir(), t.TempDir()) }
 		}, wantErr: "npx skills add cathrynlavery/diagram-design"},
 		{name: "not attachable", draw: drawGood, setup: func(c *deltaCase) { c.sctx.Config.Test.Evidence.AttachMedia = false }, wantErr: "cannot be attached"},
 		{name: "self check fails", draw: drawGood, setup: func(c *deltaCase) {
@@ -407,5 +407,27 @@ func TestArchitectureDelta_IsGeneratedOnlyOnAStampedBuild(t *testing.T) {
 	t.Cleanup(func() { buildinfo.ArchitectureDelta = "" })
 	if got := stripGeneratedSections(body); strings.Contains(got, "Architecture delta") {
 		t.Fatalf("a drafted body must not carry its own delta section, got:\n%s", got)
+	}
+}
+
+func TestArchitectureDelta_FindsTheSkillInTheNoMistakesRootFirst(t *testing.T) {
+	t.Parallel()
+	root, home := t.TempDir(), t.TempDir()
+	install := func(dir string) string {
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "SKILL.md"), []byte("x"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return dir
+	}
+	agents := install(filepath.Join(home, ".agents", "skills", "diagram-design"))
+	if got, err := (architectureDeltaDeps{}).findSkillIn(root, home); err != nil || got != agents {
+		t.Fatalf("with only the agents' copy: got %q, %v; want %q", got, err, agents)
+	}
+	private := install(filepath.Join(root, "skills", "diagram-design"))
+	if got, err := (architectureDeltaDeps{}).findSkillIn(root, home); err != nil || got != private {
+		t.Fatalf("with the root's copy too: got %q, %v; want %q", got, err, private)
 	}
 }

@@ -14,6 +14,7 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/agent"
 	"github.com/kunchenguid/no-mistakes/internal/buildinfo"
 	"github.com/kunchenguid/no-mistakes/internal/git"
+	"github.com/kunchenguid/no-mistakes/internal/paths"
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
@@ -322,16 +323,24 @@ func (d architectureDeltaDeps) findSkill() (string, error) {
 	if d.skillDir != nil {
 		return d.skillDir()
 	}
+	p, err := paths.New()
+	if err != nil {
+		return "", fmt.Errorf("an architecture delta is required, but the no-mistakes root is unknown: %w", err)
+	}
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return "", fmt.Errorf("an architecture delta is required, but the home directory is unknown: %w", err)
 	}
-	return d.findSkillIn(home)
+	return d.findSkillIn(p.Root(), home)
 }
 
-// findSkillIn looks where the skills CLI and Claude Code install skills under home.
-func (architectureDeltaDeps) findSkillIn(home string) (string, error) {
+// findSkillIn looks first in the no-mistakes root, where the skill is the
+// pipeline's alone and no coding agent loads it, then where the skills CLI and
+// Claude Code install skills under home.
+func (architectureDeltaDeps) findSkillIn(root, home string) (string, error) {
+	private := filepath.Join(root, "skills", "diagram-design")
 	candidates := []string{
+		private,
 		filepath.Join(home, ".agents", "skills", "diagram-design"),
 		filepath.Join(home, ".claude", "skills", "diagram-design"),
 	}
@@ -340,7 +349,7 @@ func (architectureDeltaDeps) findSkillIn(home string) (string, error) {
 			return dir, nil
 		}
 	}
-	return "", fmt.Errorf("an architecture delta is required, but the diagram-design skill is not installed (looked in %s); install it with `npx skills add cathrynlavery/diagram-design`", strings.Join(candidates, " and "))
+	return "", fmt.Errorf("an architecture delta is required, but the diagram-design skill is not installed (looked in %s); copy skills/diagram-design from github.com/cathrynlavery/diagram-design to %s, or install it with `npx skills add cathrynlavery/diagram-design`", strings.Join(candidates, ", "), private)
 }
 
 func (d architectureDeltaDeps) runCheck(sctx *pipeline.StepContext, skillDir, html string) error {
