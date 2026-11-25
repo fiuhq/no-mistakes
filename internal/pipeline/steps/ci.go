@@ -546,6 +546,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 	timeoutMergeConflict := false
 	lastMonitorLog := ciMonitorStatus{}
 	consecutiveCheckErrs := 0
+	// The head whose checks were last read all passed. While it is still the
+	// run's head, a failed read can't change the verdict: keep watching.
+	checksPassedHead := ""
 	consecutiveBotCommentErrs := 0
 	timeoutOutcome := func() (*pipeline.StepOutcome, error) {
 		if handoffPending(sctx) {
@@ -748,14 +751,23 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				}
 				lastMonitorLog = ciMonitorStatus{}
 				sctx.Log(fmt.Sprintf("warning: could not check CI: %v", err))
-				consecutiveCheckErrs++
-				// A provider read that keeps failing (e.g. gh < v2.50 rejecting
-				// `gh pr checks --json`) must become an actionable stop, not an
-				// invisible spin to ci_timeout. The PR state check above returned
-				// already for merged/closed, so reaching here means the PR is open.
-				if consecutiveCheckErrs >= consecutiveCheckErrorLimit {
-					sctx.Log(fmt.Sprintf("CI checks could not be read %d consecutive times, parking for a decision", consecutiveCheckErrs))
-					return ciTerminalRepairOutcome(ciCheckReadFailureOutcome(err), Findings{}, sctx.DeferredFindings), nil
+				if checksPassedHead != "" && checksPassedHead == sctx.Run.HeadSHA {
+					// Green already: the run only waits for a merge, so a read
+					// that fails (a GitHub blip, a stalled keychain) is no
+					// reason to stop and ask anyone. Readiness is cleared above
+					// until a read answers again; the loop goes on to its usual
+					// wait and reads again.
+					consecutiveCheckErrs = 0
+				} else {
+					consecutiveCheckErrs++
+					// A provider read that keeps failing (e.g. gh < v2.50 rejecting
+					// `gh pr checks --json`) must become an actionable stop, not an
+					// invisible spin to ci_timeout. The PR state check above returned
+					// already for merged/closed, so reaching here means the PR is open.
+					if consecutiveCheckErrs >= consecutiveCheckErrorLimit {
+						sctx.Log(fmt.Sprintf("CI checks could not be read %d consecutive times, parking for a decision", consecutiveCheckErrs))
+						return ciTerminalRepairOutcome(ciCheckReadFailureOutcome(err), Findings{}, sctx.DeferredFindings), nil
+					}
 				}
 			}
 		} else {
@@ -1003,7 +1015,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						botCommentReadFailed = true
 						consecutiveBotCommentErrs++
 						sctx.Log(fmt.Sprintf("warning: could not read review bot comments: %v", botErr))
-						if consecutiveBotCommentErrs >= consecutiveCheckErrorLimit {
+						if consecutiveBotCommentErrs >= consecutiveBotCommentErrorLimit {
 							sctx.Log(fmt.Sprintf("review bot comments could not be read %d consecutive times, parking for a decision", consecutiveBotCommentErrs))
 							return ciTerminalRepairOutcome(reviewBotCommentsReadFailureOutcome(botErr), Findings{}, sctx.DeferredFindings), nil
 						}
@@ -1061,6 +1073,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 						sctx.Log("validation complete: releasing the run now; the PR is ready for a human to merge")
 						return &pipeline.StepOutcome{CIReadyNoCI: &declaredNoCI}, nil
 					}
+					checksPassedHead = sctx.Run.HeadSHA
 					passedMsg := ciChecksPassedMsg
 					if declaredNoCI {
 						passedMsg = ciNoChecksPassedMsg

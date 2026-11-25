@@ -1810,12 +1810,59 @@ func TestAvailableScopesAuthToConfiguredHost(t *testing.T) {
 	// unscoped form is treated as a failure here to prove the scoped form
 	// is the one actually invoked.
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh auth status --hostname ghe.example.com": {},
+		"gh auth status --hostname ghe.example.com --active": {},
 		"gh auth status": {stderr: "github.com: token invalid\n", code: 1},
 	}), func() bool { return true }, "ghe.example.com", "")
 
 	if err := host.Available(context.Background()); err != nil {
 		t.Fatalf("Available() error = %v, want nil (scoped auth should pass)", err)
+	}
+}
+
+func TestAvailableChecksOnlyTheActiveAccount(t *testing.T) {
+	t.Parallel()
+
+	// Another account on the same host (one kept in the macOS keychain, which a
+	// background daemon can stall on) must not be read: only --active passes.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status --hostname github.com --active": {},
+		"gh auth status --hostname github.com":          {stderr: "keyring read timed out\n", code: 1},
+	}), func() bool { return true }, "github.com", "")
+
+	if err := host.Available(context.Background()); err != nil {
+		t.Fatalf("Available() error = %v, want nil (only the active account is checked)", err)
+	}
+}
+
+func TestAvailableFallsBackWhenGhLacksActive(t *testing.T) {
+	t.Parallel()
+
+	// gh before --active answers "unknown flag": the host-scoped check, as before.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status --hostname github.com --active": {stderr: "unknown flag: --active\n", code: 1},
+		"gh auth status --hostname github.com":          {},
+	}), func() bool { return true }, "github.com", "")
+
+	if err := host.Available(context.Background()); err != nil {
+		t.Fatalf("Available() error = %v, want nil (fallback without --active)", err)
+	}
+}
+
+func TestWithStderrKeepsGhReason(t *testing.T) {
+	t.Parallel()
+
+	cmd := exec.Command("sh", "-c", "echo 'first line' >&2; echo 'HTTP 502: Bad Gateway' >&2; exit 1")
+	_, err := cmd.Output()
+	got := withStderr(err)
+	if !strings.Contains(got.Error(), "HTTP 502: Bad Gateway") {
+		t.Fatalf("withStderr(%v) = %q, want gh's last stderr line", err, got)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(got, &exitErr) {
+		t.Fatalf("withStderr must keep the ExitError reachable, got %T", got)
+	}
+	if plain := errors.New("plain"); withStderr(plain) != plain {
+		t.Fatal("withStderr must leave a non-exit error alone")
 	}
 }
 

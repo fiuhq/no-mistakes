@@ -646,6 +646,56 @@ func TestCIStep_CheckReadFailureCounterResetsAfterSuccessfulRead(t *testing.T) {
 	}
 }
 
+func TestCIStep_ReadFailuresAfterGreenNeverPark(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	// Checks pass, then every read fails for longer than the parking limit. The
+	// run only waits for a merge by then, so it must keep watching, not park
+	// and ask someone about a GitHub blip or a stalled keychain read.
+	checksSequence := []string{`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`}
+	for i := 0; i < steps.ConsecutiveCheckErrorLimit()+3; i++ {
+		checksSequence = append(checksSequence, `not-json`)
+	}
+	env := stepstest.FakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 60 * time.Second
+
+	var logs []string
+	sctx.Log = func(s string) { logs = append(logs, s) }
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	waits := 0
+	step := (&steps.CIStep{}).SetBaseBranchTip(func(context.Context) (string, bool) { return baseSHA, true }).SetWaitForNextPoll(func(ctx context.Context, _ time.Duration) error {
+		waits++
+		if waits == steps.ConsecutiveCheckErrorLimit()+3 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	})
+	outcome, err := step.Execute(sctx)
+	if err == nil && outcome != nil && outcome.NeedsApproval {
+		t.Fatalf("read failures after green checks parked the run: %s", outcome.Findings)
+	}
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("expected monitoring to continue until cancelled, got outcome=%v err=%v", outcome, err)
+	}
+	for _, l := range logs {
+		if strings.Contains(l, "parking for a decision") {
+			t.Fatalf("parked after green: %v", logs)
+		}
+	}
+}
+
 func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
