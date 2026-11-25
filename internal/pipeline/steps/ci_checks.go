@@ -363,16 +363,17 @@ func ciFailureOutcome(failing []scm.CheckTarget, mergeConflict bool, summary str
 }
 
 // consecutiveCheckErrorLimit bounds consecutive GetChecks failures before the
-// CI step parks at an ask-user gate. At the default 30s poll this is ~15 minutes
-// of a provider read that keeps failing: long enough that a GitHub blip or a
+// CI step parks at an ask-user gate. With the step's slowing poll, 30 consecutive
+// failed polls are about 35 minutes from the step's start, up to about an hour
+// later on: long enough that a GitHub blip or a
 // stalled keychain read never parks a run, short enough that a broken gh
 // (e.g. < v2.50, which rejects `gh pr checks --json`) still becomes an
 // actionable stop instead of an invisible spin to ci_timeout.
 const consecutiveCheckErrorLimit = 30
 
 // consecutiveBotCommentErrorLimit bounds consecutive failed reads of review-bot
-// comments before the CI step parks: unchanged at 6 (~3 minutes at the default
-// poll), separate from the check-read limit above.
+// comments before the CI step parks: unchanged at 6 consecutive polls (3 to 12
+// minutes, depending on the poll interval), separate from the check-read limit above.
 const consecutiveBotCommentErrorLimit = 6
 
 // ConsecutiveCheckErrorLimit is the parked-after-N-failures bound. Tests in
