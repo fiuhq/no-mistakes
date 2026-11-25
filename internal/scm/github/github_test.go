@@ -1810,12 +1810,61 @@ func TestAvailableScopesAuthToConfiguredHost(t *testing.T) {
 	// unscoped form is treated as a failure here to prove the scoped form
 	// is the one actually invoked.
 	host := New(githubTestCmdFactory(map[string]githubTestResponse{
-		"gh auth status --hostname ghe.example.com": {},
+		"gh auth status --hostname ghe.example.com --active": {},
 		"gh auth status": {stderr: "github.com: token invalid\n", code: 1},
 	}), func() bool { return true }, "ghe.example.com", "")
 
 	if err := host.Available(context.Background()); err != nil {
 		t.Fatalf("Available() error = %v, want nil (scoped auth should pass)", err)
+	}
+}
+
+func TestAvailableChecksOnlyTheActiveAccount(t *testing.T) {
+	t.Parallel()
+
+	// Another account on the same host (one kept in the macOS keychain, which a
+	// background daemon can stall on) must not be read: only --active passes.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status --hostname github.com --active": {},
+		"gh auth status --hostname github.com":          {stderr: "keyring read timed out\n", code: 1},
+	}), func() bool { return true }, "github.com", "")
+
+	if err := host.Available(context.Background()); err != nil {
+		t.Fatalf("Available() error = %v, want nil (only the active account is checked)", err)
+	}
+}
+
+func TestAvailableFallsBackWhenGhLacksActive(t *testing.T) {
+	t.Parallel()
+
+	// gh before --active answers "unknown flag": the host-scoped check, as before.
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh auth status --hostname github.com --active": {stderr: "unknown flag: --active\n", code: 1},
+		"gh auth status --hostname github.com":          {},
+	}), func() bool { return true }, "github.com", "")
+
+	if err := host.Available(context.Background()); err != nil {
+		t.Fatalf("Available() error = %v, want nil (fallback without --active)", err)
+	}
+}
+
+func TestFailedGhCallKeepsGhReason(t *testing.T) {
+	t.Parallel()
+
+	host := New(githubTestCmdFactory(map[string]githubTestResponse{
+		"gh pr view 123 --repo test/repo --json state --jq .state": {
+			stderr: "first line\nHTTP 502: Bad Gateway\n",
+			code:   1,
+		},
+	}), nil, "", "test/repo")
+
+	_, err := host.GetPRState(context.Background(), &scm.PR{Number: "123"})
+	if err == nil || !strings.Contains(err.Error(), "HTTP 502: Bad Gateway") {
+		t.Fatalf("GetPRState() error = %v, want gh's last stderr line", err)
+	}
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		t.Fatalf("GetPRState() error must keep the ExitError reachable, got %T", err)
 	}
 }
 

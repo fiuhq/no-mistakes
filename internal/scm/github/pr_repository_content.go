@@ -13,7 +13,7 @@ func (h *Host) GetPRRepositoryContent(ctx context.Context, number string) (scm.P
 	args = append(args, "--json", "number,url,title,body")
 	out, err := h.cmd(ctx, "gh", args...).Output()
 	if err != nil {
-		return scm.PRRepositoryContent{}, fmt.Errorf("gh pr view: %w", err)
+		return scm.PRRepositoryContent{}, fmt.Errorf("gh pr view: %w", withStderr(err))
 	}
 	var raw struct {
 		Number      int

@@ -172,12 +172,24 @@ func (h *Host) Available(ctx context.Context) error {
 	// back to the unscoped check (fail-safe: same behavior as before).
 	authArgs := []string{"auth", "status"}
 	if h.host != "" {
-		authArgs = append(authArgs, "--hostname", h.host)
+		// --active checks only the account gh will use. Without it gh reads every
+		// account on the host, and one kept in the macOS keychain can stall when
+		// read from a background daemon (cli/cli#14171), timing the check out.
+		authArgs = append(authArgs, "--hostname", h.host, "--active")
 	}
 	cmd := h.cmd(ctx, "gh", authArgs...)
 	var stderr bytes.Buffer
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	if err != nil && ctx.Err() == nil && strings.Contains(stderr.String(), "unknown flag: --active") {
+		// gh before the flag existed: the host-scoped check, as before.
+		authArgs = authArgs[:len(authArgs)-1]
+		cmd = h.cmd(ctx, "gh", authArgs...)
+		stderr.Reset()
+		cmd.Stderr = &stderr
+		err = cmd.Run()
+	}
+	if err != nil {
 		// Keep timeout / missing-binary failures distinct from auth failure so a
 		// cancelled reconcile context is not reported as "log in again".
 		if errors.Is(ctx.Err(), context.DeadlineExceeded) {
@@ -436,7 +448,7 @@ func (h *Host) GetPRContent(ctx context.Context, pr *scm.PR) (scm.PRContent, err
 	args = append(args, "--json", "title,body")
 	out, err := h.cmd(ctx, "gh", args...).Output()
 	if err != nil {
-		return scm.PRContent{}, fmt.Errorf("gh pr view: %w", err)
+		return scm.PRContent{}, fmt.Errorf("gh pr view: %w", withStderr(err))
 	}
 	var parsed struct {
 		Title *string `json:"title"`
@@ -475,7 +487,7 @@ func (h *Host) GetPRState(ctx context.Context, pr *scm.PR) (scm.PRState, error) 
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("gh pr view: %w", err)
+		return "", fmt.Errorf("gh pr view: %w", withStderr(err))
 	}
 	return normalizePRState(strings.TrimSpace(string(out))), nil
 }
@@ -489,7 +501,7 @@ func (h *Host) GetPRBaseBranch(ctx context.Context, pr *scm.PR) (string, error) 
 	args = append(args, "--json", "baseRefName", "--jq", ".baseRefName")
 	out, err := h.cmd(ctx, "gh", args...).Output()
 	if err != nil {
-		return "", fmt.Errorf("gh pr view base branch: %w", err)
+		return "", fmt.Errorf("gh pr view base branch: %w", withStderr(err))
 	}
 	return strings.TrimSpace(string(out)), nil
 }
@@ -895,7 +907,7 @@ func (h *Host) getPRHeadSHA(ctx context.Context, selector string) (string, error
 	args = append(args, "--json", "headRefOid", "--jq", ".headRefOid")
 	out, err := h.cmd(ctx, "gh", args...).Output()
 	if err != nil {
-		return "", fmt.Errorf("gh pr view head commit: %w", err)
+		return "", fmt.Errorf("gh pr view head commit: %w", withStderr(err))
 	}
 	headSHA := strings.TrimSpace(string(out))
 	if headSHA == "" {
@@ -1191,7 +1203,7 @@ func (h *Host) runJobs(ctx context.Context, runID string) (jobs []githubRunJob, 
 	viewArgs = append(viewArgs, "--json", "jobs")
 	out, err := h.cmd(ctx, "gh", viewArgs...).Output()
 	if err != nil {
-		return nil, false, fmt.Errorf("gh run view %s: %w", runID, err)
+		return nil, false, fmt.Errorf("gh run view %s: %w", runID, withStderr(err))
 	}
 	var payload githubRunJobsView
 	if err := json.Unmarshal(out, &payload); err != nil {
@@ -1271,7 +1283,7 @@ func (h *Host) GetMergeableState(ctx context.Context, pr *scm.PR) (scm.Mergeable
 	cmd := h.cmd(ctx, "gh", args...)
 	out, err := cmd.Output()
 	if err != nil {
-		return "", fmt.Errorf("gh pr view mergeable: %w", err)
+		return "", fmt.Errorf("gh pr view mergeable: %w", withStderr(err))
 	}
 	return parseMergeableState(string(out)), nil
 }
@@ -1336,7 +1348,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 	listCmd := h.cmd(ctx, "gh", args...)
 	listOut, err := listCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("list GitHub runs for selected logs: %w", err)
+		return nil, fmt.Errorf("list GitHub runs for selected logs: %w", withStderr(err))
 	}
 	var runs []githubRun
 	if err := json.Unmarshal(listOut, &runs); err != nil {
@@ -1366,7 +1378,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 				matched[target.Identity()] = true
 				results[i].Output = strings.TrimSpace(string(out))
 				if fetchErr != nil {
-					results[i].Err = fmt.Errorf("fetch GitHub run %d failed logs: %w", run.DatabaseID, fetchErr)
+					results[i].Err = fmt.Errorf("fetch GitHub run %d failed logs: %w", run.DatabaseID, withStderr(fetchErr))
 				}
 			}
 		}
@@ -1386,7 +1398,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 				matched[target.Identity()] = true
 				results[i].Output = strings.TrimSpace(string(out))
 				if fetchErr != nil {
-					results[i].Err = fmt.Errorf("fetch GitHub job %d log: %w", jobID, fetchErr)
+					results[i].Err = fmt.Errorf("fetch GitHub job %d log: %w", jobID, withStderr(fetchErr))
 				}
 			}
 		}
@@ -1449,7 +1461,7 @@ func selectedRunJobIDs(ctx context.Context, h *Host, run githubRun, targets map[
 	viewArgs = append(viewArgs, "--json", "jobs")
 	out, err := h.cmd(ctx, "gh", viewArgs...).Output()
 	if err != nil {
-		return nil, fmt.Errorf("list GitHub run %d jobs for selected logs: %w", run.DatabaseID, err)
+		return nil, fmt.Errorf("list GitHub run %d jobs for selected logs: %w", run.DatabaseID, withStderr(err))
 	}
 	var view githubRunView
 	if err := json.Unmarshal(out, &view); err != nil {
@@ -1771,4 +1783,25 @@ func appendReviewBotComments(comments []scm.ReviewComment, page reviewCommentCon
 		})
 	}
 	return comments
+}
+
+// withStderr keeps gh's own reason in a failed call's error. exec's Output
+// saves stderr in the ExitError but its message is only "exit status 1", which
+// hides whether a read failed on a network blip, a rate limit, a signed-out
+// request or a missing PR. The last line gh printed is appended; the error
+// still wraps the original, so errors.Is and errors.As keep working.
+func withStderr(err error) error {
+	var exitErr *exec.ExitError
+	if !errors.As(err, &exitErr) {
+		return err
+	}
+	lines := strings.Split(strings.TrimSpace(string(exitErr.Stderr)), "\n")
+	last := strings.TrimSpace(lines[len(lines)-1])
+	if last == "" {
+		return err
+	}
+	if len(last) > 300 {
+		last = last[:300]
+	}
+	return fmt.Errorf("%w: %s", err, last)
 }
