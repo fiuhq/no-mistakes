@@ -199,13 +199,13 @@ func (h *Host) Available(ctx context.Context) error {
 			return fmt.Errorf("gh auth status interrupted: %w", ctx.Err())
 		}
 		if isMissingExecutable(err) {
-			return fmt.Errorf("gh CLI is not on PATH: %w", withStderr(err))
+			return fmt.Errorf("gh CLI is not on PATH: %w", err)
 		}
 		detail := strings.TrimSpace(stderr.String())
 		if detail != "" {
 			return fmt.Errorf("gh CLI is not authenticated: %s: %w", detail, err)
 		}
-		return fmt.Errorf("gh CLI is not authenticated: %w", withStderr(err))
+		return fmt.Errorf("gh CLI is not authenticated: %w", err)
 	}
 	return nil
 }
@@ -1203,7 +1203,7 @@ func (h *Host) runJobs(ctx context.Context, runID string) (jobs []githubRunJob, 
 	viewArgs = append(viewArgs, "--json", "jobs")
 	out, err := h.cmd(ctx, "gh", viewArgs...).Output()
 	if err != nil {
-		return nil, false, fmt.Errorf("gh run view %s: %w", runID, err)
+		return nil, false, fmt.Errorf("gh run view %s: %w", runID, withStderr(err))
 	}
 	var payload githubRunJobsView
 	if err := json.Unmarshal(out, &payload); err != nil {
@@ -1348,7 +1348,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 	listCmd := h.cmd(ctx, "gh", args...)
 	listOut, err := listCmd.Output()
 	if err != nil {
-		return nil, fmt.Errorf("list GitHub runs for selected logs: %w", err)
+		return nil, fmt.Errorf("list GitHub runs for selected logs: %w", withStderr(err))
 	}
 	var runs []githubRun
 	if err := json.Unmarshal(listOut, &runs); err != nil {
@@ -1378,7 +1378,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 				matched[target.Identity()] = true
 				results[i].Output = strings.TrimSpace(string(out))
 				if fetchErr != nil {
-					results[i].Err = fmt.Errorf("fetch GitHub run %d failed logs: %w", run.DatabaseID, fetchErr)
+					results[i].Err = fmt.Errorf("fetch GitHub run %d failed logs: %w", run.DatabaseID, withStderr(fetchErr))
 				}
 			}
 		}
@@ -1398,7 +1398,7 @@ func (h *Host) FetchFailedCheckTargetLogs(ctx context.Context, _ *scm.PR, branch
 				matched[target.Identity()] = true
 				results[i].Output = strings.TrimSpace(string(out))
 				if fetchErr != nil {
-					results[i].Err = fmt.Errorf("fetch GitHub job %d log: %w", jobID, fetchErr)
+					results[i].Err = fmt.Errorf("fetch GitHub job %d log: %w", jobID, withStderr(fetchErr))
 				}
 			}
 		}
@@ -1461,7 +1461,7 @@ func selectedRunJobIDs(ctx context.Context, h *Host, run githubRun, targets map[
 	viewArgs = append(viewArgs, "--json", "jobs")
 	out, err := h.cmd(ctx, "gh", viewArgs...).Output()
 	if err != nil {
-		return nil, fmt.Errorf("list GitHub run %d jobs for selected logs: %w", run.DatabaseID, err)
+		return nil, fmt.Errorf("list GitHub run %d jobs for selected logs: %w", run.DatabaseID, withStderr(err))
 	}
 	var view githubRunView
 	if err := json.Unmarshal(out, &view); err != nil {

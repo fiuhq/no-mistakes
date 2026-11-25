@@ -696,6 +696,51 @@ func TestCIStep_ReadFailuresAfterGreenNeverPark(t *testing.T) {
 	}
 }
 
+func TestCIStep_ReadFailuresAfterGreenThenPendingPark(t *testing.T) {
+	t.Parallel()
+	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)
+
+	// Checks pass, then a read shows a check running again on the same head,
+	// then every read fails. The run is no longer only waiting for a merge, so
+	// the failed reads must count toward the limit and park.
+	checksSequence := []string{
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"}]`,
+		`[{"name":"build","state":"SUCCESS","bucket":"pass"},{"name":"late","state":"PENDING","bucket":"pending"}]`,
+	}
+	for i := 0; i < steps.ConsecutiveCheckErrorLimit()+3; i++ {
+		checksSequence = append(checksSequence, `not-json`)
+	}
+	env := stepstest.FakeCIGHSequence(t, "OPEN", checksSequence)
+
+	prURL := "https://github.com/test/repo/pull/42"
+	ag := &stepstest.MockAgent{AgentName: "test"}
+	sctx := stepstest.NewTestContext(t, ag, dir, baseSHA, headSHA, config.Commands{})
+	sctx.Env = env
+	sctx.Run.PRURL = &prURL
+	sctx.Config.CITimeout = 60 * time.Second
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	sctx.Ctx = ctx
+
+	waits := 0
+	step := (&steps.CIStep{}).SetBaseBranchTip(func(context.Context) (string, bool) { return baseSHA, true }).SetWaitForNextPoll(func(ctx context.Context, _ time.Duration) error {
+		waits++
+		if waits == steps.ConsecutiveCheckErrorLimit()+5 {
+			cancel()
+			return ctx.Err()
+		}
+		return nil
+	})
+	outcome, err := step.Execute(sctx)
+	if err != nil {
+		t.Fatalf("expected the read failures to park, got error: %v", err)
+	}
+	if outcome == nil || !outcome.NeedsApproval {
+		t.Fatalf("expected an approval gate after a non-green read, got %+v", outcome)
+	}
+}
+
 func TestCIStep_CIWarningClearsPersistedReadiness(t *testing.T) {
 	t.Parallel()
 	dir, baseSHA, headSHA := stepstest.SetupGitRepo(t)

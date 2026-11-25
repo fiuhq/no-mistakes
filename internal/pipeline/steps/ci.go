@@ -741,6 +741,7 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 				// the wait, and the readiness signal is cleared because the
 				// previous observation was for a different head.
 				consecutiveCheckErrs = 0
+				checksPassedHead = ""
 				timeoutFailingChecks = nil
 				if err := logStatus(fmt.Sprintf("%s%v", cimonitor.ChecksHeadWaitingPrefix, err)); err != nil {
 					return nil, err
@@ -772,6 +773,9 @@ func (s *CIStep) Execute(sctx *pipeline.StepContext) (outcome *pipeline.StepOutc
 			}
 		} else {
 			consecutiveCheckErrs = 0
+			if !allChecksPassed(checks) && (len(checks) > 0 || sctx.Config == nil || !sctx.Config.NoCI) {
+				checksPassedHead = ""
+			}
 			timeoutExternalReviews = nil
 			for _, check := range checks {
 				if check.ExternalReview != "" && check.Bucket != scm.CheckBucketPass {
