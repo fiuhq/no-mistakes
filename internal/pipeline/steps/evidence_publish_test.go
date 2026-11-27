@@ -354,7 +354,8 @@ func TestPublishRunEvidence_NeverPublishesTheArchitectureDelta(t *testing.T) {
 	sctx, remote := newEvidencePublishContext(t, "feature/add-login")
 	writeRunEvidence(t, sctx, map[string]string{
 		"cli-run.txt": "it works\n",
-		filepath.ToSlash(filepath.Join(architectureDeltaDirName, architectureDeltaSVG)): "<svg></svg>",
+		filepath.ToSlash(filepath.Join(architectureDeltaDirName, "architecture-delta-light.png")): "png",
+		filepath.ToSlash(filepath.Join(architectureDeltaDirName, architectureDeltaHTML)):          "<html></html>",
 	})
 
 	if links := publishRunEvidence(sctx); links == nil {

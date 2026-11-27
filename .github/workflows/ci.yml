@@ -142,6 +142,13 @@ jobs:
             Write-Host "::warning::Defender exclusions unavailable, Windows tests run untuned: $_"
           }
 
+      # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox
+      # needs, so the architecture-delta browser test aborts at startup. Lift the
+      # restriction on the disposable runner rather than drop the sandbox.
+      - name: Allow Chromium's sandbox
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: Test on Unix
         if: runner.os != 'Windows'
         run: go test -race ./...
@@ -208,5 +215,12 @@ jobs:
       # no separate build step is needed. Linux-only for now: opencode's
       # ephemeral HTTP server picks up unused ports via :0, which is
       # fine on Linux runners but flakes on Windows agent harnesses.
+      # Ubuntu 24.04 blocks the unprivileged user namespaces Chromium's sandbox
+      # needs, so the architecture-delta browser test aborts at startup. Lift the
+      # restriction on the disposable runner rather than drop the sandbox.
+      - name: Allow Chromium's sandbox
+        if: runner.os == 'Linux'
+        run: sudo sysctl -w kernel.apparmor_restrict_unprivileged_userns=0
+
       - name: End-to-end suite
         run: make e2e
