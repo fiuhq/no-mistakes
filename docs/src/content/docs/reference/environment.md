@@ -200,6 +200,17 @@ Fallback GitHub token used by `no-mistakes update` when `GITHUB_TOKEN` is unset 
 
 See [`GITHUB_TOKEN`](#github_token) for the updater's authentication behavior and precedence.
 
+## `NM_CHROMIUM`
+
+The Chromium or Chrome binary the PR step uses to photograph the architecture delta, on a build that requires one.
+
+|         |                                                                                                                              |
+| ------- | ---------------------------------------------------------------------------------------------------------------------------- |
+| Type    | `string` (path to a binary)                                                                                                  |
+| Default | unset (the step looks for Playwright's `chrome-headless-shell`, then a Chromium or Chrome on `PATH` or in `/Applications`) |
+
+A set value that names no file fails the PR step instead of falling back. See the architecture delta in [pipeline steps](/no-mistakes/reference/pipeline-steps/#pr).
+
 ## `NO_MISTAKES_NO_UPDATE_CHECK`
 
 Disable background update checks.

@@ -300,6 +300,46 @@ func TestArchitectureDelta_TrimsTheEmptyPageUnderTheCard(t *testing.T) {
 	}
 }
 
+// testDeltaPolicy is the page policy the step must put first in <head>: no
+// script and no load that is not inline data.
+const testDeltaPolicy = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:">`
+
+func TestArchitectureDelta_ThemedPageOwnsItsHeadAndBackground(t *testing.T) {
+	t.Parallel()
+	cases := []struct {
+		name string
+		card string
+		// kept is the card's text that must stay ahead of the step's head.
+		kept    string
+		ownHead bool
+	}{
+		{name: "its own head", card: `<!doctype html><html lang="en"><head><style>html,body{background:transparent}</style></head><body data-htr="architecture-delta">x</body></html>`, kept: `<!doctype html><html lang="en"><head>`, ownHead: true},
+		{name: "a header and no head", card: `<html><body data-htr="architecture-delta"><header>x</header></body></html>`, kept: `<html>`},
+		{name: "a doctype and no head", card: "<!DOCTYPE html>\n<body data-htr=\"architecture-delta\">x</body>", kept: "<!DOCTYPE html>\n"},
+		{name: "a bare body", card: `<body data-htr="architecture-delta">x</body>`},
+	}
+	for _, tc := range cases {
+		page := themeArchitectureDeltaCard(tc.card, architectureDeltaThemes[0])
+		open := "<head>"
+		if tc.ownHead {
+			open = ""
+		}
+		if !strings.HasPrefix(page, tc.kept+open+testDeltaPolicy+"<style>") {
+			t.Fatalf("%s: the policy and theme must open the head, after any doctype or html tag:\n%s", tc.name, page)
+		}
+		if !strings.HasSuffix(page, tc.card[len(tc.kept):]) {
+			t.Fatalf("%s: the card's own text must follow unchanged:\n%s", tc.name, page)
+		}
+		if !strings.Contains(page, "html{background:var(--background)!important}") {
+			t.Fatalf("%s: the page background must win over the card's:\n%s", tc.name, page)
+		}
+	}
+}
+
+// testDeltaHostileCard sets the page background transparent and carries a
+// script that would paint the whole page; the step's page must win over both.
+const testDeltaHostileCard = `<!doctype html><html><head><style>html,body{background:transparent;color:var(--foreground)}.box{border:1px solid var(--border);background:var(--card);padding:12px;width:300px;height:80px}</style></head><body data-htr="architecture-delta"><div class="box">Refused row</div><script>document.body.innerHTML='<div style="height:4000px;background:red"></div>'</script></body></html>`
+
 // TestArchitectureDelta_PhotographsARealCard runs the installed Chromium, when
 // there is one, on a real card in both themes.
 func TestArchitectureDelta_PhotographsARealCard(t *testing.T) {
@@ -315,7 +355,7 @@ func TestArchitectureDelta_PhotographsARealCard(t *testing.T) {
 	var corners []color.Color
 	for _, theme := range architectureDeltaThemes {
 		page, shot := filepath.Join(dir, theme.name+".html"), filepath.Join(dir, theme.name+".png")
-		if err := os.WriteFile(page, []byte(themeArchitectureDeltaCard(testDeltaCard, theme)), 0o644); err != nil {
+		if err := os.WriteFile(page, []byte(themeArchitectureDeltaCard(testDeltaHostileCard, theme)), 0o644); err != nil {
 			t.Fatal(err)
 		}
 		if err := (architectureDeltaDeps{}).runShoot(context.Background(), browser, page, shot); err != nil {
@@ -341,8 +381,11 @@ func TestArchitectureDelta_PhotographsARealCard(t *testing.T) {
 			t.Fatalf("%s image is %v: want the full width and the empty page trimmed", architectureDeltaThemes[i].name, size)
 		}
 	}
-	if sameColour(corners[0], corners[1]) {
-		t.Fatalf("the light and dark pages share a background %v: the theme was not applied", corners[0])
+	// GitHub's light and dark page colours.
+	for i, want := range []color.Color{color.RGBA{0xff, 0xff, 0xff, 0xff}, color.RGBA{0x0d, 0x11, 0x17, 0xff}} {
+		if !sameColour(corners[i], want) {
+			t.Fatalf("the %s page background is %v, want %v: the theme's page colour must win over the card's", architectureDeltaThemes[i].name, corners[i], want)
+		}
 	}
 }
 
@@ -404,6 +447,8 @@ func TestArchitectureDelta_RefusesEveryWayItCannotBeDrawn(t *testing.T) {
 		{name: "not a delta", draw: card(`<html><body><div>x</div></body></html>`), wantErr: "is not an architecture delta"},
 		{name: "runs a script", draw: card(`<html><body data-htr="architecture-delta"><SCRIPT>x()</SCRIPT></body></html>`), wantErr: "may not run or fetch anything"},
 		{name: "loads from the network", draw: card(`<html><body data-htr="architecture-delta"><img src="https://example.com/a.png"></body></html>`), wantErr: "may not run or fetch anything"},
+		{name: "runs an event handler", draw: card(`<html><body data-htr="architecture-delta" onload="x()"></body></html>`), wantErr: "may not run or fetch anything"},
+		{name: "sets its own policy or refresh", draw: card(`<html><head><meta http-equiv="refresh" content="0;url=file:///etc/passwd"></head><body data-htr="architecture-delta"></body></html>`), wantErr: "may not run or fetch anything"},
 		{name: "loads a font from the network", draw: card(`<html><head><style>@font-face{src:url( '//cdn.example/f.woff')}</style></head><body data-htr="architecture-delta"></body></html>`), wantErr: "may not run or fetch anything"},
 		{name: "never written", draw: func(t *testing.T) func(*pipeline.StepContext, string) {
 			return func(*pipeline.StepContext, string) {}

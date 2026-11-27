@@ -26,6 +26,8 @@ import (
 	"github.com/kunchenguid/no-mistakes/internal/pipeline"
 	"github.com/kunchenguid/no-mistakes/internal/safepath"
 	"github.com/kunchenguid/no-mistakes/internal/scm"
+	"github.com/kunchenguid/no-mistakes/internal/shellenv"
+	"github.com/kunchenguid/no-mistakes/internal/winproc"
 )
 
 // An architecture delta is an htr card of the branch's change: the system
@@ -255,8 +257,8 @@ What to draw:
 How the card is built:
 - One complete HTML document. Put %[4]s on its <body>.
 - Colours and fonts come only from these CSS variables, which the page supplies in a light and a dark version: --background, --foreground, --muted-foreground, --border, --card, --accent, --primary, --primary-foreground, --ring, --chart-1 to --chart-6, --radius, --font-sans, --font-mono. Never set a fixed colour for text, boxes or the page; color-mix() of a variable with transparent is fine for a tint.
-- Keep the outer page background transparent and the card at most 1200 CSS pixels wide.
-- No <script>, no <iframe>, <object>, <embed>, <link> or <base>, no @import, and nothing loaded from the network (no http or https URL in src, srcset or url()). Inline SVG and inline styles are fine.
+- Leave the page background to the page: do not set a background on html or body. Keep the card at most 1200 CSS pixels wide.
+- No <script>, no inline event handler (onload= and the like), no <iframe>, <object>, <embed>, <link>, <base> or <meta http-equiv>, no @import, and nothing loaded from the network (no http or https URL in src, srcset or url()). Inline SVG and inline styles are fine.
 
 Files:
 The workspace boundary above allows writes outside the worktree only when a prompt explicitly asks for them. This prompt is that explicit request: the file below is this run's evidence, and it belongs in that evidence directory, outside the worktree.
@@ -281,7 +283,7 @@ func parseArchitectureDelta(result *agent.Result) (architectureDeltaDraft, error
 		return draft, errors.New("the architecture delta agent returned no alt text")
 	}
 	if len(draft.Changes) == 0 || len(draft.Changes) > maxArchitectureDeltaChanges {
-		return draft, fmt.Errorf("the architecture delta ledger has %d entries; the skill allows 1 to %d", len(draft.Changes), maxArchitectureDeltaChanges)
+		return draft, fmt.Errorf("the architecture delta ledger has %d entries; a delta lists 1 to %d changes", len(draft.Changes), maxArchitectureDeltaChanges)
 	}
 	for i, change := range draft.Changes {
 		draft.Changes[i] = oneLine(change)
@@ -305,10 +307,15 @@ func oneLine(text string) string {
 	return text
 }
 
-// architectureDeltaForbidden is what a card may not carry: anything that runs,
-// embeds another document or reaches the network. The page is shot with the
-// network shut as well; this refusal names the problem instead.
-var architectureDeltaForbidden = regexp.MustCompile(`(?i)<\s*(script|iframe|object|embed|link|base)\b|@import|javascript:|(?:src|srcset)\s*=\s*["']?\s*(?:https?:)?//|url\(\s*["']?\s*(?:https?:)?//`)
+// architectureDeltaForbidden is an early, readable refusal of the common ways
+// a card could run, embed another document or reach the network. The
+// enforcement is architectureDeltaCSP, which the browser applies however the
+// card spells things.
+var architectureDeltaForbidden = regexp.MustCompile(`(?i)<\s*(script|iframe|object|embed|link|base)\b|@import|javascript:|http-equiv|\son[a-z]+\s*=|(?:src|srcset)\s*=\s*["']?\s*(?:https?:)?//|url\(\s*["']?\s*(?:https?:)?//`)
+
+// architectureDeltaCSP stops every script and every load that is not inline
+// data, so the photographed page is exactly the redacted card.
+const architectureDeltaCSP = `<meta http-equiv="Content-Security-Policy" content="default-src 'none'; style-src 'unsafe-inline'; img-src data:; font-src data:">`
 
 // readArchitectureDeltaCard reads the agent's card and refuses one that is
 // not the delta or carries something the page must not run or fetch.
@@ -327,17 +334,22 @@ func readArchitectureDeltaCard(path string) (string, error) {
 	return card, nil
 }
 
-var architectureDeltaHead = regexp.MustCompile(`(?i)<head[^>]*>`)
+var (
+	architectureDeltaHead     = regexp.MustCompile(`(?i)<head(?:\s[^>]*)?>`)
+	architectureDeltaPreamble = regexp.MustCompile(`(?i)^\s*(?:<!doctype[^>]*>\s*)?(?:<html(?:\s[^>]*)?>)?`)
+)
 
 // themeArchitectureDeltaCard gives the card its colours, as Paseo gives an
 // html_render card its theme: the variables on :root, ahead of the card's own
 // styles, and a solid page background the trim can find the card's edge on.
+// The policy comes first in <head>, ahead of anything of the card's.
 func themeArchitectureDeltaCard(card string, theme architectureDeltaTheme) string {
-	style := "<style>:root{" + theme.css + ";" + architectureDeltaShared + "}html{background:var(--background)}body{margin:0;padding:24px}</style>"
+	head := architectureDeltaCSP + "<style>:root{" + theme.css + ";" + architectureDeltaShared + "}html{background:var(--background)!important}body{margin:0;padding:24px}</style>"
 	if loc := architectureDeltaHead.FindStringIndex(card); loc != nil {
-		return card[:loc[1]] + style + card[loc[1]:]
+		return card[:loc[1]] + head + card[loc[1]:]
 	}
-	return "<head>" + style + "</head>" + card
+	at := architectureDeltaPreamble.FindStringIndex(card)[1]
+	return card[:at] + "<head>" + head + "</head>" + card[at:]
 }
 
 // trimArchitectureDeltaImage cuts the empty page under the card, keeping a
@@ -483,7 +495,9 @@ func (d architectureDeltaDeps) runShoot(ctx context.Context, browser, page, png 
 		"--screenshot="+png,
 		(&url.URL{Scheme: "file", Path: page}).String(),
 	)
-	out, err := cmd.CombinedOutput()
+	winproc.Harden(cmd)
+	shellenv.ConfigureShellCommand(cmd)
+	out, err := shellenv.CombinedOutputShellCommand(cmd)
 	if _, statErr := os.Stat(png); err != nil || statErr != nil {
 		return fmt.Errorf("the browser wrote no screenshot: %v: %s", err, lastLines(string(out), 3))
 	}
